@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@dignetwork/dig-sdk": ["./dist/index.d.ts"],
+      "@dignetwork/dig-sdk/spend": ["./dist/spend.d.ts"]
+    }
+  },
+  "include": ["examples"]
+}
