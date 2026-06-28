@@ -21,6 +21,7 @@ import {
   type WalletConnectOptions,
 } from "./walletconnect.js";
 import * as M from "./methods.js";
+import { DigSdkError } from "../errors.js";
 
 /** Options for `ChiaProvider.connect()`. */
 export interface ConnectOptions {
@@ -104,9 +105,11 @@ export class ChiaProvider {
 
     const tryWalletConnect = async (): Promise<ChiaProvider> => {
       if (!options.walletConnect) {
-        throw new Error(
+        throw new DigSdkError(
+          "WC_OPTIONS_REQUIRED",
           "WalletConnect options are required to connect via WalletConnect " +
             "(pass { walletConnect: { projectId, metadata, onUri } }).",
+          { mode },
         );
       }
       const transport = await WalletConnectTransport.connect({
@@ -119,8 +122,10 @@ export class ChiaProvider {
     if (mode === "injected") {
       const injected = await tryInjected();
       if (!injected) {
-        throw new Error(
+        throw new DigSdkError(
+          "NO_INJECTED_WALLET",
           "No injected DIG wallet found. Open this page in the DIG Browser, or use mode 'auto'.",
+          { mode, acceptAnyInjected: !!options.acceptAnyInjected },
         );
       }
       return injected;

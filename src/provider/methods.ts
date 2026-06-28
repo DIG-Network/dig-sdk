@@ -5,6 +5,7 @@
 // WalletConnect transports.
 
 import type { SignResult } from "../types.js";
+import { DigSdkError } from "../errors.js";
 
 /** A function that issues one CHIP-0002 RPC through some transport. */
 export type RequestFn = (method: string, params: unknown) => Promise<unknown>;
@@ -72,7 +73,8 @@ export async function signMessage(
   }
   const keys = await getPublicKeys(request);
   const publicKey = keys[0];
-  if (!publicKey) throw new Error("Wallet returned no keys to sign with.");
+  if (!publicKey)
+    throw new DigSdkError("WALLET_NO_KEYS", "Wallet returned no keys to sign with.");
   const sig = normalizeSig(await request("chip0002_signMessage", { message, publicKey }));
   return { publicKey: sig.publicKey ?? with0x(publicKey), signature: sig.signature };
 }
@@ -98,7 +100,11 @@ export async function takeOffer(
   fee = 0,
 ): Promise<unknown> {
   if (!supports("chia_takeOffer")) {
-    throw new Error("Your wallet session does not support taking offers. Reconnect your wallet.");
+    throw new DigSdkError(
+      "METHOD_NOT_SUPPORTED",
+      "Your wallet session does not support taking offers. Reconnect your wallet.",
+      { method: "chia_takeOffer" },
+    );
   }
   return request("chia_takeOffer", { offer, fee });
 }
