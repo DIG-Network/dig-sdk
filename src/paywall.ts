@@ -166,10 +166,25 @@ function bytesToHex(bytes: Uint8Array): string {
   return s;
 }
 
-/** 32 random bytes (WebCrypto, available in browsers and Node 18+). */
-function randomNonce(): Uint8Array {
+/**
+ * 32 cryptographically-random bytes. Prefers the global WebCrypto (browsers, Node 20+); falls back
+ * to `node:crypto`'s `webcrypto` on Node 18, where `globalThis.crypto` is not exposed by default.
+ * Async because the Node fallback dynamically imports `node:crypto` (keeps the browser bundle from
+ * pulling in a Node builtin).
+ */
+async function randomNonce(): Promise<Uint8Array> {
   const out = new Uint8Array(32);
-  crypto.getRandomValues(out);
+  const webcrypto = (globalThis as { crypto?: Crypto }).crypto;
+  if (webcrypto?.getRandomValues) {
+    webcrypto.getRandomValues(out);
+    return out;
+  }
+  // Node 18: no global `crypto`. Use the node:crypto WebCrypto implementation.
+  const nodeCrypto = (await import("node:crypto")) as { webcrypto?: Crypto };
+  if (!nodeCrypto.webcrypto?.getRandomValues) {
+    throw new Error("No secure random source available to generate a payment nonce.");
+  }
+  nodeCrypto.webcrypto.getRandomValues(out);
   return out;
 }
 
