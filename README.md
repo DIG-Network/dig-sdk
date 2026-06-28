@@ -11,6 +11,10 @@ The typed front door for building dapps on the **DIG Network**. One `npm i` give
 - **`@dignetwork/dig-sdk/spend`** — the canonical CHIP-0035 spend builder
   (`@dignetwork/chip35-dl-coin-wasm`) re-exported. Build store / NFT / CAT spends through the SDK
   and sign them with the wallet. Spends are **never** hand-rolled.
+- **`Paywall`** — a high-level **pay-to-unlock** helper. Charge XCH or a CAT (e.g. DIG) to unlock a
+  resource, then gate access by verifying the payment — or gate on holding an **NFT** / a
+  **collection** membership. It composes `ChiaProvider` with the canonical monetization spends; the
+  wasm builds every coin spend, the wallet signs it.
 - **Framework adapters** — `@dignetwork/dig-sdk/vite` (a Vite plugin) and `@dignetwork/dig-sdk/next`
   (a Next static-export adapter): inject a `window.chia` dev wallet during `dev`, and ship your
   build to a DIG capsule on a `publish` script. See **[Framework adapters](#framework-adapters)**.
@@ -94,6 +98,45 @@ const aggregatedSignature = await provider.signCoinSpends(/* coinSpends from the
 The hub builds spend bundles in-browser via this wasm and pushes them to the wallet for signing —
 your dapp does the same through the SDK.
 
+## Charge for access (Paywall)
+
+`Paywall` turns the monetization spends into a pay-to-unlock flow. It sources the buyer's coins from
+the connected wallet, asks the wasm to build the payment, pushes those coin spends to the wallet to
+sign, and hands you back a **receipt** — it never assembles a spend itself.
+
+```ts
+import { ChiaProvider, Paywall } from "@dignetwork/dig-sdk";
+
+const provider = await ChiaProvider.connect({ mode: "auto", walletConnect });
+const paywall = new Paywall(provider); // chip35 monetization wasm is loaded lazily under a bundler
+
+// Charge 0.25 XCH to unlock a resource (amount is mojos). `memo` derives a deterministic unlock nonce.
+const { receipt, signature } = await paywall.requestPayment({
+  amount: 250_000_000_000n,
+  owner: dappOwnerPuzzleHashHex,
+  memo: `unlock:${resourceId}:${userId}`,
+});
+
+// …or charge a CAT (e.g. DIG) by passing its tail hash:
+await paywall.requestPayment({ amount: 100n, owner: dappOwnerPuzzleHashHex, assetId: digTailHashHex });
+
+// Later, gate access by re-checking the on-chain payment against the receipt:
+const { ok } = await paywall.verifyReceipt({
+  observed: observedPayment, // an ObservedPayment you filled in after reading the owner's coin
+  owner: dappOwnerPuzzleHashHex,
+  minAmount: 250_000_000_000n,
+});
+if (ok) grantAccess();
+
+// Or gate on holding an NFT (or a collection membership) instead of a payment:
+const access = await paywall.proveAccess({ parentSpend, owner, nft: nftLauncherIdHex });
+// const access = await paywall.proveAccess({ parentSpend, owner, collection: creatorDidHex });
+```
+
+> No bundler? Pass the spend builder in yourself — `new Paywall(provider, { spends })`, where
+> `spends` is `import * as spends from "@dignetwork/dig-sdk/spend"` (or the chip35 module). The
+> builder is always the canonical wasm; the Paywall only orchestrates it.
+
 ---
 
 ## API surface
@@ -132,6 +175,19 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 | `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)` | Lower-level read-crypto. |
 | `wasm()` | The raw SRI-verified read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …). |
 
+### `Paywall`
+
+| Member | Description |
+|---|---|
+| `new Paywall(provider, { spends? })` | Wrap a connected `ChiaProvider`. `spends` defaults to a lazy `import("@dignetwork/chip35-dl-coin-wasm")` (pass it for non-bundler runtimes). |
+| `requestPayment({ amount, owner, assetId?, memo?, nonce?, fee?, coinLimit? })` | Build the payment via the wasm (`buildPayment` XCH / `buildCatPayment` CAT) and push it to the wallet to sign. Returns `{ signature, receipt, coinSpends, nonce }`. |
+| `verifyReceipt({ observed, owner, minAmount, asset?, nonce? })` | Verify an observed on-chain payment unlocks the paywall (wasm `verifyPaymentReceipt`). Returns `{ ok, error? }`. |
+| `proveAccess({ parentSpend, owner, nft? \| collection? })` | Prove NFT ownership (`proveNftOwnership`) or collection membership (`proveCollectionMembership`). Returns `{ ok, proof?, error? }`. |
+
+`amount` / `minAmount` / `fee` accept a `number` or `bigint`; hashes/ids/nonces are hex (with or
+without `0x`). The Paywall holds **no** spend-assembly logic — if the canonical wasm builder is
+unavailable it throws rather than fabricate a spend.
+
 ### URN helpers (pure)
 
 `parseUrn`, `isUrn`, `reconstructUrn`, `reconstructUrnWithRoot` and the `ParsedUrn` type — the same
@@ -141,11 +197,13 @@ URN grammar the hub, extension, and companion use.
 
 `import * as spend from "@dignetwork/dig-sdk/spend"` re-exports
 [`@dignetwork/chip35-dl-coin-wasm`](https://www.npmjs.com/package/@dignetwork/chip35-dl-coin-wasm)
-(≥ 0.5.0): store coins (`mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`,
+(≥ 0.7.0): store coins (`mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`,
 `oracleSpend`), assets (`mintNft`, `bulkMint`, `createDid`, `issueCat`), CHIP-0007 metadata
 (`buildChip0007Metadata`, `validateChip0007`, `generateItemMetadata`), offers (`encodeOffer`,
-`decodeOffer`), and helpers (`addFee`, `dataStoreFromSpend`, `hexSpendBundleToCoinSpends`,
-`spendBundleToHex`, `digstoreOwnerHint`, `sha256`, `init`).
+`decodeOffer`), monetization (`buildPayment`, `buildCatPayment`, `paymentNonce`,
+`verifyPaymentReceipt`, `proveNftOwnership`, `proveCollectionMembership` — these back the
+[`Paywall`](#paywall) helper), and helpers (`addFee`, `dataStoreFromSpend`,
+`hexSpendBundleToCoinSpends`, `spendBundleToHex`, `digstoreOwnerHint`, `sha256`, `init`).
 
 ---
 
