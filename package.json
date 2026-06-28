@@ -41,6 +41,26 @@
       "import": "./dist/spend.js",
       "require": "./dist/spend.cjs"
     },
+    "./dig-client": {
+      "types": "./dist/dig-client.d.ts",
+      "import": "./dist/dig-client.js",
+      "require": "./dist/dig-client.cjs"
+    },
+    "./adapters": {
+      "types": "./dist/adapters.d.ts",
+      "import": "./dist/adapters.js",
+      "require": "./dist/adapters.cjs"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "require": "./dist/vite.cjs"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "import": "./dist/next.js",
+      "require": "./dist/next.cjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
