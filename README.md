@@ -145,7 +145,7 @@ const access = await paywall.proveAccess({ parentSpend, owner, nft: nftLauncherI
 
 | Member | Description |
 |---|---|
-| `static connect(options)` | Connect a wallet. `mode`: `"auto"` (default, prefer injected) / `"injected"` / `"walletconnect"`. |
+| `static connect(options)` | Connect a wallet. See **`ConnectOptions`** below. |
 | `connectWallet(options)` | Convenience alias for `ChiaProvider.connect`. |
 | `backend` / `session` | The connected transport (`"injected"` \| `"walletconnect"`) and session descriptor. |
 | `getAddress()` | The wallet's receive address (cached). |
@@ -161,6 +161,15 @@ const access = await paywall.proveAccess({ parentSpend, owner, nft: nftLauncherI
 Transports are also exported directly (`InjectedTransport`, `WalletConnectTransport`,
 `isInjectedAvailable`, `getInjectedProvider`) for advanced flows (e.g. restoring a WC session via
 `WalletConnectTransport.restore(...)`).
+
+#### `ConnectOptions`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `"auto"` \| `"injected"` \| `"walletconnect"` | `"auto"` | `"auto"` prefers the injected DIG wallet and falls back to WalletConnect; `"injected"` requires the injected wallet (throws `NO_INJECTED_WALLET` if absent); `"walletconnect"` forces WalletConnect→Sage (throws `WC_OPTIONS_REQUIRED` if `walletConnect` is omitted). |
+| `walletConnect` | `WalletConnectOptions` | — | Required for the WalletConnect fallback/force path (`projectId`, `metadata`, `onUri`). Omit if you only target the injected DIG Browser wallet. |
+| `chain` | `string` | `"chia:mainnet"` | CAIP-2 chain id. Mainnet only — there is no testnet flow. |
+| `acceptAnyInjected` | `boolean` | `false` | Accept any `window.chia` for the injected path, not just the DIG Browser's unspoofable `isDIG` provider. Use with care — a non-DIG provider is not feature-detected. |
 
 ### `DigClient`
 
@@ -287,6 +296,81 @@ Both adapters resolve config with this precedence: **`digDeploy()` options > `DI
 `DIGSTORE_STORE_SALT` from the env. The pure building blocks (config resolution, deploy-arg
 construction, the dev-shim string, the `dig.toml` reader) are exported from
 `@dignetwork/dig-sdk/adapters` if you want to compose your own deploy step.
+
+---
+
+## Machine-readable surface (for agents)
+
+The SDK is self-describing: an agent can introspect its version, modules, methods, chains, and the
+full error catalogue without reading source, and every failure carries a stable machine code.
+
+### Capabilities & version
+
+```ts
+import { SDK_VERSION, capabilities } from "@dignetwork/dig-sdk";
+
+SDK_VERSION;       // "0.1.0" — the published version, injected from package.json at build time
+capabilities();    // (alias: describe()) the machine-readable surface ↓
+```
+
+`capabilities()` (and its alias `describe()`) returns:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | `"@dignetwork/dig-sdk"`. |
+| `version` | `string` | `SDK_VERSION`. |
+| `modules` | `{ name, summary, entry }[]` | The pillars: `ChiaProvider`, `DigClient`, `Paywall`, `spend`, `adapters` (each with its import `entry`). |
+| `walletMethods` | `string[]` | The canonical CHIP-0002 method surface both transports negotiate. |
+| `signMethods` | `string[]` | Message-signing methods, in preference order. |
+| `transports` | `("injected" \| "walletconnect")[]` | The wallet transports. |
+| `chains` | `string[]` | CAIP-2 chains — `["chia:mainnet"]` (no testnet flow). |
+| `defaultRpc` | `string` | The default dig RPC endpoint `DigClient` reads from. |
+| `readCryptoWasmSha256` | `string` | SRI digest of the vendored read-crypto wasm (fail-closed on mismatch). |
+| `errorCodes` | `string[]` | The full stable error-code catalogue (see below). |
+
+### Error codes
+
+Every failure the SDK surfaces is a **`DigSdkError`** (an `Error` subclass) with a stable, documented
+`.code` (UPPER_SNAKE) plus structured `.context`. Branch on `err.code` (or the `isDigSdkError(err, code)`
+type guard) — never on the human `.message`.
+
+```ts
+import { DigClient, DigSdkError, isDigSdkError } from "@dignetwork/dig-sdk";
+
+try {
+  await new DigClient().read({ urn });
+} catch (e) {
+  if (isDigSdkError(e, "ROOT_REQUIRED")) promptForRoot();
+  else if (isDigSdkError(e, "RPC_TRANSPORT")) retryLater();
+  else throw e;
+}
+// DigSdkError also has .toJSON() → { code, message, context }
+```
+
+The catalogue is exported as the typed `DIG_SDK_ERROR_CODES` const (and the `DigSdkErrorCode` union),
+and is also returned by `capabilities().errorCodes`:
+
+| Code | Thrown when | Key context fields |
+|---|---|---|
+| `WC_OPTIONS_REQUIRED` | WalletConnect was needed but no `walletConnect` options were given. | `mode` |
+| `NO_INJECTED_WALLET` | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`. | `mode`, `acceptAnyInjected` |
+| `WC_DEPENDENCY_MISSING` | The optional `@walletconnect/sign-client` peer dep is not installed. | — |
+| `METHOD_NOT_SUPPORTED` | The active session/transport does not grant the requested method. | `method` |
+| `WALLET_TIMEOUT` | A wallet RPC timed out (e.g. Sage did not respond). | `method`, `timeoutMs` |
+| `WALLET_NO_KEYS` | The wallet returned no public keys / no key to sign with. | — |
+| `ROOT_REQUIRED` | A content read needs a confirmed on-chain root and none was supplied. | `urn` |
+| `DECRYPT_FAILED` | The resource did not decrypt under this URN (wrong key/salt, or a decoy). | `urn` |
+| `RPC_TRANSPORT` | The dig RPC could not be reached (network/transport failure). | `rpcMethod` |
+| `RPC_ERROR` | The dig RPC returned an HTTP error or a JSON-RPC `error`. | `rpcMethod`, `httpStatus`, `rpcCode` |
+| `RPC_MALFORMED_RESPONSE` | The dig RPC returned a malformed/inconsistent payload. | `rpcMethod` |
+| `WASM_INTEGRITY` | The read-crypto wasm failed its SRI check — fail closed. | `expected`, `actual` |
+| `WASM_LOAD_FAILED` | The read-crypto wasm could not be loaded. | `httpStatus`, `wasmUrl` |
+| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled). | `builder` |
+| `NO_SECURE_RANDOM` | No secure random source to generate a payment nonce. | — |
+| `DIGSTORE_NOT_FOUND` | The `digstore` binary could not be spawned (not installed / not on PATH). | `bin` |
+| `DEPLOY_FAILED` | `digstore deploy` exited non-zero. | `exitCode`, `stderr` |
+| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule. | `stdout` |
+| `INVALID_ARGUMENT` | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule). | `value`, `expected` |
 
 ---
 

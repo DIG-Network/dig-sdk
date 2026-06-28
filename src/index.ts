@@ -82,3 +82,21 @@ export type {
   ReadResult,
   UrnKeys,
 } from "./types.js";
+
+// ---- Typed error taxonomy (stable machine codes) ----
+export {
+  DigSdkError,
+  DIG_SDK_ERROR_CODES,
+  isDigSdkError,
+  type DigSdkErrorCode,
+  type DigSdkErrorContext,
+} from "./errors.js";
+
+// ---- Runtime self-description (introspection) ----
+export {
+  SDK_VERSION,
+  capabilities,
+  describe,
+  type SdkCapabilities,
+  type ModuleDescriptor,
+} from "./capabilities.js";

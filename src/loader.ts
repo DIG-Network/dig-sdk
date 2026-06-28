@@ -15,6 +15,7 @@
 // Memoized: the wasm initializes at most once per process/page.
 
 import type { DigClientWasm } from "./wasm.js";
+import { DigSdkError } from "./errors.js";
 
 /** SHA-256 (lowercase hex) of vendor/dig_client_bg.wasm — the SRI digest. Fail closed on mismatch. */
 export const DIG_CLIENT_WASM_SHA256 =
@@ -79,9 +80,11 @@ async function sha256Hex(bytes: BufferSource): Promise<string> {
 function assertIntegrity(hex: string): void {
   if (_config.skipIntegrity) return;
   if (hex !== DIG_CLIENT_WASM_SHA256) {
-    throw new Error(
+    throw new DigSdkError(
+      "WASM_INTEGRITY",
       "dig-client wasm integrity check failed — refusing to run unverified crypto " +
         `(expected ${DIG_CLIENT_WASM_SHA256}, got ${hex}).`,
+      { expected: DIG_CLIENT_WASM_SHA256, actual: hex },
     );
   }
 }
@@ -116,7 +119,11 @@ async function loadBrowser(): Promise<{ glueHref: string; bytes: BufferSource }>
     const wasmUrl =
       _config.wasmUrl ?? new URL("../vendor/dig_client_bg.wasm", import.meta.url).href;
     const res = await fetch(wasmUrl);
-    if (!res.ok) throw new Error(`dig-client wasm fetch failed (${res.status})`);
+    if (!res.ok)
+      throw new DigSdkError("WASM_LOAD_FAILED", `dig-client wasm fetch failed (${res.status})`, {
+        httpStatus: res.status,
+        wasmUrl,
+      });
     bytes = await res.arrayBuffer();
   }
   return { glueHref, bytes };

@@ -14,6 +14,7 @@ import { WALLET_METHODS, SIGN_METHODS, DEFAULT_CHAIN } from "../methods.js";
 import type { WalletBackend } from "../types.js";
 import type { WalletTransport } from "./transport.js";
 import { isTransientPublishError } from "./wc-retry.js";
+import { DigSdkError } from "../errors.js";
 
 /** App metadata shown to the wallet during pairing. */
 export interface WalletConnectMetadata {
@@ -150,9 +151,11 @@ export class WalletConnectTransport implements WalletTransport {
 
   async request(method: string, params: unknown): Promise<unknown> {
     if (!this.supports(method)) {
-      throw new Error(
+      throw new DigSdkError(
+        "METHOD_NOT_SUPPORTED",
         `Your wallet session does not grant "${method}". Disconnect and reconnect your wallet ` +
           "to refresh the session (and make sure Sage is up to date).",
+        { method },
       );
     }
     const MAX_ATTEMPTS = 3;
@@ -178,7 +181,14 @@ export class WalletConnectTransport implements WalletTransport {
     let t: ReturnType<typeof setTimeout>;
     const timeout = new Promise<never>((_, rej) => {
       t = setTimeout(
-        () => rej(new Error("Sage did not respond — open the Sage app and try again.")),
+        () =>
+          rej(
+            new DigSdkError(
+              "WALLET_TIMEOUT",
+              "Sage did not respond — open the Sage app and try again.",
+              { method, timeoutMs: this.requestTimeoutMs },
+            ),
+          ),
         this.requestTimeoutMs,
       );
     });
@@ -220,10 +230,13 @@ async function loadSignClient(): Promise<{ init(opts: unknown): Promise<unknown>
       throw new Error("unexpected @walletconnect/sign-client shape");
     }
     return SignClient;
-  } catch {
-    throw new Error(
+  } catch (e) {
+    throw new DigSdkError(
+      "WC_DEPENDENCY_MISSING",
       "WalletConnect fallback requires the optional peer dependency '@walletconnect/sign-client'. " +
         "Install it (npm i @walletconnect/sign-client) to use the WalletConnect→Sage transport.",
+      {},
+      { cause: e },
     );
   }
 }

@@ -17,6 +17,7 @@
 // runtimes) inject the builder. Either way the builder is the canonical wasm, never a reimplementation.
 
 import type { ChiaProvider } from "./provider/chia-provider.js";
+import { DigSdkError } from "./errors.js";
 
 /** A payment asset: XCH, or a CAT identified by its tail hash (e.g. DIG). */
 export type PaymentAssetSpec =
@@ -152,7 +153,7 @@ function strip0x(hex: string): string {
 function hexToBytes(hex: string): Uint8Array {
   const h = strip0x(hex);
   if (h.length % 2 !== 0 || /[^0-9a-f]/.test(h)) {
-    throw new Error(`invalid hex string: ${hex}`);
+    throw new DigSdkError("INVALID_ARGUMENT", `invalid hex string: ${hex}`, { value: hex });
   }
   const out = new Uint8Array(h.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
@@ -182,7 +183,10 @@ async function randomNonce(): Promise<Uint8Array> {
   // Node 18: no global `crypto`. Use the node:crypto WebCrypto implementation.
   const nodeCrypto = (await import("node:crypto")) as { webcrypto?: Crypto };
   if (!nodeCrypto.webcrypto?.getRandomValues) {
-    throw new Error("No secure random source available to generate a payment nonce.");
+    throw new DigSdkError(
+      "NO_SECURE_RANDOM",
+      "No secure random source available to generate a payment nonce.",
+    );
   }
   nodeCrypto.webcrypto.getRandomValues(out);
   return out;
@@ -243,7 +247,11 @@ export class Paywall {
   private async buyerKey(): Promise<Uint8Array> {
     const keys = await this.provider.getPublicKeys();
     const key = keys?.[0];
-    if (!key) throw new Error("Wallet returned no public keys to build the payment against.");
+    if (!key)
+      throw new DigSdkError(
+        "WALLET_NO_KEYS",
+        "Wallet returned no public keys to build the payment against.",
+      );
     return hexToBytes(key);
   }
 
@@ -252,8 +260,10 @@ export class Paywall {
     if (args.nonce) return hexToBytes(args.nonce);
     if (args.memo) {
       if (typeof spends.paymentNonce !== "function") {
-        throw new Error(
+        throw new DigSdkError(
+          "SPEND_BUILDER_UNAVAILABLE",
           "Cannot derive a nonce from `memo`: the chip35 wasm `paymentNonce` is unavailable.",
+          { builder: "paymentNonce" },
         );
       }
       return spends.paymentNonce(new TextEncoder().encode(args.memo));
@@ -276,18 +286,22 @@ export class Paywall {
     let built: { coinSpends: unknown; receipt: unknown };
     if (args.assetId) {
       if (typeof spends.buildCatPayment !== "function") {
-        throw new Error(
+        throw new DigSdkError(
+          "SPEND_BUILDER_UNAVAILABLE",
           "chip35 wasm `buildCatPayment` is unavailable — cannot build a CAT payment " +
             "(the Paywall never hand-rolls spends).",
+          { builder: "buildCatPayment" },
         );
       }
       const cats = await this.provider.getCatCoins(strip0x(args.assetId), args.coinLimit);
       built = spends.buildCatPayment(buyerKey, cats, ownerPh, amount, nonce);
     } else {
       if (typeof spends.buildPayment !== "function") {
-        throw new Error(
+        throw new DigSdkError(
+          "SPEND_BUILDER_UNAVAILABLE",
           "chip35 wasm `buildPayment` is unavailable — cannot build an XCH payment " +
             "(the Paywall never hand-rolls spends).",
+          { builder: "buildPayment" },
         );
       }
       const coins = await this.provider.getXchCoins(args.coinLimit);
@@ -311,7 +325,11 @@ export class Paywall {
   async verifyReceipt(args: VerifyReceiptArgs): Promise<{ ok: boolean; error?: string }> {
     const spends = await this.spends();
     if (typeof spends.verifyPaymentReceipt !== "function") {
-      throw new Error("chip35 wasm `verifyPaymentReceipt` is unavailable.");
+      throw new DigSdkError(
+        "SPEND_BUILDER_UNAVAILABLE",
+        "chip35 wasm `verifyPaymentReceipt` is unavailable.",
+        { builder: "verifyPaymentReceipt" },
+      );
     }
     const asset = args.asset ?? { xch: true };
     const requiredAsset =
@@ -336,18 +354,30 @@ export class Paywall {
    */
   async proveAccess(args: ProveAccessArgs): Promise<{ ok: boolean; proof?: unknown; error?: string }> {
     if (args.nft && args.collection) {
-      throw new Error("proveAccess: pass either `nft` or `collection`, not both.");
+      throw new DigSdkError(
+        "INVALID_ARGUMENT",
+        "proveAccess: pass either `nft` or `collection`, not both.",
+        { value: "nft+collection" },
+      );
     }
     const spends = await this.spends();
     const owner = hexToBytes(args.owner);
     if (args.collection) {
       if (typeof spends.proveCollectionMembership !== "function") {
-        throw new Error("chip35 wasm `proveCollectionMembership` is unavailable.");
+        throw new DigSdkError(
+          "SPEND_BUILDER_UNAVAILABLE",
+          "chip35 wasm `proveCollectionMembership` is unavailable.",
+          { builder: "proveCollectionMembership" },
+        );
       }
       return spends.proveCollectionMembership(args.parentSpend, owner, hexToBytes(args.collection));
     }
     if (typeof spends.proveNftOwnership !== "function") {
-      throw new Error("chip35 wasm `proveNftOwnership` is unavailable.");
+      throw new DigSdkError(
+        "SPEND_BUILDER_UNAVAILABLE",
+        "chip35 wasm `proveNftOwnership` is unavailable.",
+        { builder: "proveNftOwnership" },
+      );
     }
     const requiredNft = args.nft ? hexToBytes(args.nft) : null;
     return spends.proveNftOwnership(args.parentSpend, owner, requiredNft);

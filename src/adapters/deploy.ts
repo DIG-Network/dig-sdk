@@ -13,6 +13,7 @@
 //                        hub view = https://hub.dig.net/stores/<id>; dig:// names the store).
 
 import type { ResolvedDeployConfig } from "./config.js";
+import { DigSdkError } from "../errors.js";
 
 /** Knobs for argv construction. */
 export interface DeployArgsOptions {
@@ -85,8 +86,10 @@ export function parseDeployResult(stdout: string): DeployResult {
     .filter((l) => l.startsWith("{") && l.endsWith("}"));
 
   if (lines.length === 0) {
-    throw new Error(
+    throw new DigSdkError(
+      "DEPLOY_OUTPUT_UNPARSEABLE",
       `could not parse digstore deploy output (no JSON object found). Output was:\n${stdout.slice(0, 500)}`,
+      { stdout: stdout.slice(0, 500) },
     );
   }
 
@@ -112,17 +115,27 @@ export function parseDeployResult(stdout: string): DeployResult {
 
   if (!obj) {
     if (fallback) {
-      throw new Error(
+      throw new DigSdkError(
+        "DEPLOY_OUTPUT_UNPARSEABLE",
         `digstore deploy did not report a capsule (deploy may have failed). Output:\n${JSON.stringify(fallback)}`,
+        { output: fallback },
       );
     }
-    throw new Error(`could not parse digstore deploy output as JSON:\n${stdout.slice(0, 500)}`);
+    throw new DigSdkError(
+      "DEPLOY_OUTPUT_UNPARSEABLE",
+      `could not parse digstore deploy output as JSON:\n${stdout.slice(0, 500)}`,
+      { stdout: stdout.slice(0, 500) },
+    );
   }
 
   const capsule = obj.capsule as string;
   const m = CAPSULE_RE.exec(capsule);
   if (!m || m[1] === undefined || m[2] === undefined) {
-    throw new Error(`digstore deploy reported a malformed capsule "${capsule}" (expected storeId:root)`);
+    throw new DigSdkError(
+      "INVALID_ARGUMENT",
+      `digstore deploy reported a malformed capsule "${capsule}" (expected storeId:root)`,
+      { value: capsule, expected: "storeId:root" },
+    );
   }
   const storeId = m[1].toLowerCase();
   const root = (typeof obj.root === "string" ? obj.root : m[2]).toLowerCase();

@@ -18,6 +18,7 @@ import {
   type DeployArgsOptions,
   type DeployResult,
 } from "./deploy.js";
+import { DigSdkError } from "../errors.js";
 
 /** Options for {@link runDeploy}. */
 export interface RunDeployOptions extends AdapterOptions, DeployArgsOptions {
@@ -90,14 +91,23 @@ export async function runDeploy(options: RunDeployOptions = {}): Promise<DeployR
     });
     child.on("error", (e: Error) => {
       reject(
-        new Error(
+        new DigSdkError(
+          "DIGSTORE_NOT_FOUND",
           `could not run "${bin}" — is digstore installed and on PATH? (${e.message})`,
+          { bin },
+          { cause: e },
         ),
       );
     });
     child.on("close", (code: number | null) => {
       if (code === 0) resolve(out);
-      else reject(new Error(`digstore deploy failed (exit ${code}).\n${err || out}`));
+      else
+        reject(
+          new DigSdkError("DEPLOY_FAILED", `digstore deploy failed (exit ${code}).\n${err || out}`, {
+            exitCode: code,
+            stderr: err.slice(0, 2000),
+          }),
+        );
     });
   });
 

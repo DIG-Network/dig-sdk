@@ -15,6 +15,8 @@
 //                    key resolves to the §8.5 default view "index.html".
 //   • ?salt=<hex>  — OPTIONAL out-of-band secret salt for a PRIVATE store.
 
+import { DigSdkError } from "./errors.js";
+
 /** The parts of a parsed DIG URN. `root`/`salt` are null when absent. */
 export interface ParsedUrn {
   /** Store identity (64-hex launcher id), lowercased. */
@@ -41,8 +43,10 @@ export function parseUrn(raw: string): ParsedUrn {
   const s = String(raw ?? "").trim();
   const m = URN_RE.exec(s);
   if (!m) {
-    throw new Error(
+    throw new DigSdkError(
+      "INVALID_ARGUMENT",
       "Not a valid dig URN (expected urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]).",
+      { value: s, expected: "urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]" },
     );
   }
   return {
