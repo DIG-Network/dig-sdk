@@ -144,6 +144,34 @@ test("requestPayment: derives a nonce from memo via the wasm paymentNonce when n
   );
 });
 
+// Regression: the no-memo/no-nonce path generates a random 32-byte nonce. On Node 18 there is no
+// global `crypto` (WebCrypto is exposed globally only since Node 20), so this used to throw
+// "crypto is not defined" in CI. The Paywall must fall back to node:crypto's webcrypto. We simulate
+// Node 18 by removing globalThis.crypto for the duration of the call.
+test("requestPayment: random-nonce path works without a global crypto (Node 18)", async () => {
+  const provider = fakeProvider();
+  const spends = spyChip35();
+  const paywall = new Paywall(provider, { spends });
+
+  const prev = globalThis.crypto;
+  // delete is a no-op if the property is non-configurable, so also overwrite to be safe.
+  try {
+    delete globalThis.crypto;
+  } catch {
+    /* non-configurable on some runtimes */
+  }
+  try {
+    const result = await paywall.requestPayment({ amount: 1, owner: OWNER_PH }); // no memo, no nonce
+    assert.equal(result.nonce.length, 64, "a 32-byte (64-hex) nonce must be generated");
+    assert.ok(/^[0-9a-f]{64}$/.test(result.nonce), "nonce is lowercase hex");
+    // It did NOT route through the wasm nonce/builder for nonce derivation, but DID build + sign.
+    assert.ok(!spends.calls.some((c) => c.fn === "paymentNonce"));
+    assert.ok(provider.calls.some((c) => c.method === "signCoinSpends"));
+  } finally {
+    if (prev !== undefined) globalThis.crypto = prev;
+  }
+});
+
 test("verifyReceipt: delegates to the wasm verifyPaymentReceipt and returns its verdict", async () => {
   const provider = fakeProvider();
   const spends = spyChip35();
