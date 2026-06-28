@@ -16,6 +16,14 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     spend: "src/spend.ts",
+    // Framework adapters (#44) + their pure core. `adapters` is the framework-agnostic,
+    // spawn-nothing core (unit-tested); `vite`/`next` are the thin framework entrypoints.
+    adapters: "src/adapters.ts",
+    vite: "src/vite.ts",
+    next: "src/next.ts",
+    // Publishable read-crypto subpath (#16) — a clean, SRI-pinned entry that stays usable even
+    // once the canonical wasm is published to npm (see src/dig-client-entry.ts).
+    "dig-client": "src/dig-client-entry.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

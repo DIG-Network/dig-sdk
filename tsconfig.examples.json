@@ -12,7 +12,11 @@
     "baseUrl": ".",
     "paths": {
       "@dignetwork/dig-sdk": ["./dist/index.d.ts"],
-      "@dignetwork/dig-sdk/spend": ["./dist/spend.d.ts"]
+      "@dignetwork/dig-sdk/spend": ["./dist/spend.d.ts"],
+      "@dignetwork/dig-sdk/dig-client": ["./dist/dig-client.d.ts"],
+      "@dignetwork/dig-sdk/adapters": ["./dist/adapters.d.ts"],
+      "@dignetwork/dig-sdk/vite": ["./dist/vite.d.ts"],
+      "@dignetwork/dig-sdk/next": ["./dist/next.d.ts"]
     }
   },
   "include": ["examples"]

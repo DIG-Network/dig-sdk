@@ -11,6 +11,11 @@ The typed front door for building dapps on the **DIG Network**. One `npm i` give
 - **`@dignetwork/dig-sdk/spend`** — the canonical CHIP-0035 spend builder
   (`@dignetwork/chip35-dl-coin-wasm`) re-exported. Build store / NFT / CAT spends through the SDK
   and sign them with the wallet. Spends are **never** hand-rolled.
+- **Framework adapters** — `@dignetwork/dig-sdk/vite` (a Vite plugin) and `@dignetwork/dig-sdk/next`
+  (a Next static-export adapter): inject a `window.chia` dev wallet during `dev`, and ship your
+  build to a DIG capsule on a `publish` script. See **[Framework adapters](#framework-adapters)**.
+- **`@dignetwork/dig-sdk/dig-client`** — the read-crypto on its own (just `DigClient` + the loader +
+  URN helpers), for consumers that want only the read path (e.g. a worker). Same SRI-pinned wasm.
 
 Ships **ESM + CJS + `.d.ts`**, runs in the **browser and Node 18+**, and is **eval-free** (usable
 in CSP-strict contexts).
@@ -139,6 +144,89 @@ URN grammar the hub, extension, and companion use.
 `mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`, `oracleSpend`, `addFee`,
 `buildDigPayment`, `dataStoreFromSpend`, `hexSpendBundleToCoinSpends`, `spendBundleToHex`,
 `digCatPuzzleHash`, `digTreasuryInnerPuzzleHash`, `digstoreOwnerHint`, `init`.
+
+---
+
+## Framework adapters
+
+Make DIG a first-class deploy target for the frameworks you already use. Each adapter does two
+things: injects a **`window.chia` dev wallet** during local `dev` (the same injected-provider
+contract `ChiaProvider` detects in production, so the wallet path runs end-to-end locally), and
+ships your build to a **DIG capsule** via `digstore deploy --json` on a `publish` script.
+
+> Deploying **spends DIG** (each deploy publishes a new capsule), so it is a deliberate, credentialed
+> step — never wired into the default `build`. Config + secrets are read from your project's
+> `dig.toml` and `DIGSTORE_*` env vars, exactly like `digstore deploy`; the deploy key and store
+> salt come from the env only (never argv) so they don't leak. Requires the `digstore` CLI on PATH.
+
+### Vite — `@dignetwork/dig-sdk/vite`
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import { digVite } from "@dignetwork/dig-sdk/vite";
+
+export default defineConfig({
+  plugins: [digVite()], // injects the window.chia dev shim during `vite dev`
+});
+```
+
+```jsonc
+// package.json — opt in to deploy with a publish script (after the build)
+{
+  "scripts": {
+    "publish:dig": "vite build && node -e \"import('@dignetwork/dig-sdk/vite').then(m => m.digDeploy())\""
+  }
+}
+```
+
+`digDeploy()` shells out to `digstore deploy --json`, ships the build dir to a new capsule, and
+prints the `dig://` + `https://hub.dig.net/stores/<id>` URL. Disable the dev shim with
+`digVite({ devWallet: false })`; set its mock address with `digVite({ devWalletOptions: { address } })`.
+
+### Next.js (static export) — `@dignetwork/dig-sdk/next`
+
+Next has no Vite-style HTML hook, so the dev shim is a helper you drop into your `<head>` (guarded to
+dev), and `digDeploy()` ships the `out/` static export:
+
+```tsx
+// app/layout.tsx — dev-only window.chia shim
+import { digNextDevShimTag } from "@dignetwork/dig-sdk/next";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <head>
+        {process.env.NODE_ENV !== "production" && (
+          <script dangerouslySetInnerHTML={{ __html: digNextDevShimTag().replace(/^<script>|<\/script>$/g, "") }} />
+        )}
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+```jsonc
+// package.json — deploy the static export (next.config: `output: "export"`)
+{
+  "scripts": {
+    "publish:dig": "next build && node -e \"import('@dignetwork/dig-sdk/next').then(m => m.digDeploy())\""
+  }
+}
+```
+
+`digDeploy()` defaults the output dir to `out` (Next's export dir); override any field via
+`digDeploy({ outputDir, storeId, message, … })` or `dig.toml`.
+
+### Configuration
+
+Both adapters resolve config with this precedence: **`digDeploy()` options > `DIGSTORE_*` env >
+`dig.toml` > defaults** (mirroring `digstore deploy`). Common keys: `store-id`, `output-dir`,
+`message`, `network`, `remote` (in `dig.toml`); secrets `DIGSTORE_DEPLOY_KEY` and (private stores)
+`DIGSTORE_STORE_SALT` from the env. The pure building blocks (config resolution, deploy-arg
+construction, the dev-shim string, the `dig.toml` reader) are exported from
+`@dignetwork/dig-sdk/adapters` if you want to compose your own deploy step.
 
 ---
 
