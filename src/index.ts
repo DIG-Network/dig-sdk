@@ -9,6 +9,9 @@
 //   3. spend         — re-export of the canonical CHIP-0035 spend builder
 //                      (@dignetwork/chip35-dl-coin-wasm), imported via "@dignetwork/dig-sdk/spend".
 //                      Spends are NEVER hand-rolled (SYSTEM.md).
+//   4. Paywall       — a high-level pay-to-unlock helper (#46) that composes a ChiaProvider with the
+//                      canonical chip35 monetization spends (payment / receipt verify / NFT+
+//                      collection gating). It orchestrates only; the wasm builds every coin spend.
 
 // ---- Wallet (ChiaProvider) ----
 export {
@@ -29,6 +32,18 @@ export {
 } from "./provider/walletconnect.js";
 export { isTransientPublishError } from "./provider/wc-retry.js";
 export type { WalletTransport } from "./provider/transport.js";
+
+// ---- Monetization (Paywall, #46) ----
+export {
+  Paywall,
+  type PaywallOptions,
+  type MonetizationSpends,
+  type PaymentAssetSpec,
+  type RequestPaymentArgs,
+  type PaymentResult,
+  type VerifyReceiptArgs,
+  type ProveAccessArgs,
+} from "./paywall.js";
 
 // ---- Read-crypto (DigClient) ----
 export { DigClient, DEFAULT_RPC, type DigClientOptions } from "./dig-client.js";
