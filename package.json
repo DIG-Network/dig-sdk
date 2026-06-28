@@ -84,7 +84,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@dignetwork/chip35-dl-coin-wasm": "^0.5.0"
+    "@dignetwork/chip35-dl-coin-wasm": "^0.7.0"
   },
   "peerDependencies": {
     "@walletconnect/sign-client": "^2.11.0"
