@@ -140,10 +140,12 @@ URN grammar the hub, extension, and companion use.
 ### Spend builder
 
 `import * as spend from "@dignetwork/dig-sdk/spend"` re-exports
-[`@dignetwork/chip35-dl-coin-wasm`](https://www.npmjs.com/package/@dignetwork/chip35-dl-coin-wasm):
-`mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`, `oracleSpend`, `addFee`,
-`buildDigPayment`, `dataStoreFromSpend`, `hexSpendBundleToCoinSpends`, `spendBundleToHex`,
-`digCatPuzzleHash`, `digTreasuryInnerPuzzleHash`, `digstoreOwnerHint`, `init`.
+[`@dignetwork/chip35-dl-coin-wasm`](https://www.npmjs.com/package/@dignetwork/chip35-dl-coin-wasm)
+(≥ 0.5.0): store coins (`mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`,
+`oracleSpend`), assets (`mintNft`, `bulkMint`, `createDid`, `issueCat`), CHIP-0007 metadata
+(`buildChip0007Metadata`, `validateChip0007`, `generateItemMetadata`), offers (`encodeOffer`,
+`decodeOffer`), and helpers (`addFee`, `dataStoreFromSpend`, `hexSpendBundleToCoinSpends`,
+`spendBundleToHex`, `digstoreOwnerHint`, `sha256`, `init`).
 
 ---
 
