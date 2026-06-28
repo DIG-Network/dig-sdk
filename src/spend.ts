@@ -9,11 +9,13 @@
 // Imported via the SDK's "./spend" entry:  import * as spend from "@dignetwork/dig-sdk/spend";
 // The underlying wasm is a (non-optional) dependency, so it's always available.
 //
-// Exposed builders (see @dignetwork/chip35-dl-coin-wasm for full signatures):
-//   • mintStore / meltStore / updateStoreMetadata / updateStoreOwnership / oracleSpend
-//   • addFee / buildDigPayment
-//   • dataStoreFromSpend / hexSpendBundleToCoinSpends / spendBundleToHex
-//   • digCatPuzzleHash / digTreasuryInnerPuzzleHash / digstoreOwnerHint
-//   • init (call once before building spends)
+// Exposed builders (see @dignetwork/chip35-dl-coin-wasm >= 0.5.0 for full signatures):
+//   - Store coins:  mintStore / meltStore / updateStoreMetadata / updateStoreOwnership / oracleSpend
+//   - Assets:       mintNft / bulkMint / createDid / issueCat
+//   - CHIP-0007:    buildChip0007Metadata / validateChip0007 / generateItemMetadata
+//   - Offers:       encodeOffer / decodeOffer
+//   - Helpers:      addFee / dataStoreFromSpend / hexSpendBundleToCoinSpends / spendBundleToHex
+//   - Misc:         digstoreOwnerHint / sha256
+//   - init (call once before building spends)
 
 export * from "@dignetwork/chip35-dl-coin-wasm";
