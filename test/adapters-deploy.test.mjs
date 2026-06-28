@@ -17,6 +17,7 @@ import {
   buildDeployEnv,
   parseDeployResult,
 } from "../dist/adapters.js";
+import { isDigSdkError } from "../dist/index.js";
 
 const STORE = "ab".repeat(32);
 const ROOT = "cd".repeat(32);
@@ -107,4 +108,25 @@ test("parseDeployResult: throws a clear error when no capsule is present", () =>
 
 test("parseDeployResult: throws on non-JSON output", () => {
   assert.throws(() => parseDeployResult("digstore: command not found"), /could not parse/i);
+});
+
+test("parseDeployResult: unparseable output throws coded DEPLOY_OUTPUT_UNPARSEABLE", () => {
+  assert.throws(
+    () => parseDeployResult("digstore: command not found"),
+    (e) => isDigSdkError(e, "DEPLOY_OUTPUT_UNPARSEABLE"),
+  );
+});
+
+test("parseDeployResult: missing capsule throws coded DEPLOY_OUTPUT_UNPARSEABLE", () => {
+  assert.throws(
+    () => parseDeployResult(`{"error":"nothing to deploy"}`),
+    (e) => isDigSdkError(e, "DEPLOY_OUTPUT_UNPARSEABLE"),
+  );
+});
+
+test("parseDeployResult: malformed capsule throws coded INVALID_ARGUMENT", () => {
+  assert.throws(
+    () => parseDeployResult(JSON.stringify({ capsule: "not-a-capsule" })),
+    (e) => isDigSdkError(e, "INVALID_ARGUMENT"),
+  );
 });

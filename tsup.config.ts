@@ -1,4 +1,10 @@
 import { defineConfig } from "tsup";
+import { readFileSync } from "node:fs";
+
+// The published version, read from package.json and injected as a compile-time constant so
+// `SDK_VERSION` / `capabilities().version` can never drift from what's on npm (see src/capabilities.ts).
+const pkgVersion = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+  .version as string;
 
 // Build the SDK to ESM + CJS + .d.ts for both browser and Node 18+.
 //
@@ -36,6 +42,11 @@ export default defineConfig({
     "@dignetwork/chip35-dl-coin-wasm",
     "@walletconnect/sign-client",
   ],
+  // Inject the package version as the compile-time constant `__SDK_VERSION__` (read by
+  // src/capabilities.ts) so the published `SDK_VERSION` always matches package.json.
+  define: {
+    __SDK_VERSION__: JSON.stringify(pkgVersion),
+  },
   esbuildOptions(options) {
     // No eval anywhere — keep the bundle CSP-safe (no `unsafe-eval` required).
     options.define = { ...options.define };

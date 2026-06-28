@@ -19,6 +19,7 @@ import { loadDigClientWasm } from "./loader.js";
 import type { DigClientWasm } from "./wasm.js";
 import { parseUrn } from "./urn.js";
 import type { ReadOptions, ReadResult, UrnKeys } from "./types.js";
+import { DigSdkError } from "./errors.js";
 
 /** The default public dig RPC endpoint. */
 export const DEFAULT_RPC = "https://rpc.dig.net";
@@ -146,8 +147,10 @@ export class DigClient {
     const effSalt = input.salt ?? parsed.salt ?? null;
     const effRoot = input.root ?? parsed.root ?? null;
     if (!effRoot) {
-      throw new Error(
+      throw new DigSdkError(
+        "ROOT_REQUIRED",
         "a confirmed on-chain root is required to read content (pass { root } or use a root-pinned URN)",
+        { urn: input.urn },
       );
     }
     return this.readResource(
@@ -163,8 +166,10 @@ export class DigClient {
   ): Promise<string> {
     const r = await this.read(input, opts);
     if (!r.decrypted) {
-      throw new Error(
+      throw new DigSdkError(
+        "DECRYPT_FAILED",
         "resource did not decrypt under this URN — wrong store/key/salt, or a decoy response",
+        { urn: input.urn },
       );
     }
     return new TextDecoder().decode(r.bytes);
@@ -240,7 +245,12 @@ export class DigClient {
         offset,
         length: RPC_CHUNK_BYTES,
       });
-      if (!r) throw new Error("The content network returned no data for this request.");
+      if (!r)
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          "The content network returned no data for this request.",
+          { rpcMethod: "dig.getContent" },
+        );
       if (total === null) {
         total = r.total_length >>> 0;
         buf = new Uint8Array(total);
@@ -258,7 +268,8 @@ export class DigClient {
     return { ciphertext: buf ?? new Uint8Array(0), proof, chunkLens };
   }
 
-  // One JSON-RPC 2.0 call. Throws on transport failure or a JSON-RPC error; returns `result`.
+  // One JSON-RPC 2.0 call. Throws a coded DigSdkError on transport failure (RPC_TRANSPORT) or a
+  // JSON-RPC/HTTP error (RPC_ERROR, carrying rpcMethod/httpStatus/rpcCode context); returns `result`.
   private async rpcCall<T>(rpc: string, method: string, params: unknown): Promise<T | null> {
     let res: Response;
     try {
@@ -267,12 +278,29 @@ export class DigClient {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
       });
-    } catch {
-      throw new Error("Could not reach the content network. Check your connection and try again.");
+    } catch (e) {
+      throw new DigSdkError(
+        "RPC_TRANSPORT",
+        "Could not reach the content network. Check your connection and try again.",
+        { rpcMethod: method },
+        { cause: e },
+      );
     }
-    if (!res.ok) throw new Error(`dig RPC ${method} failed (${res.status})`);
-    const json = (await res.json()) as { result?: T; error?: { message?: string } };
-    if (json && json.error) throw new Error(`dig RPC ${method}: ${json.error.message ?? "error"}`);
+    if (!res.ok)
+      throw new DigSdkError("RPC_ERROR", `dig RPC ${method} failed (${res.status})`, {
+        rpcMethod: method,
+        httpStatus: res.status,
+      });
+    const json = (await res.json()) as {
+      result?: T;
+      error?: { message?: string; code?: number };
+    };
+    if (json && json.error)
+      throw new DigSdkError(
+        "RPC_ERROR",
+        `dig RPC ${method}: ${json.error.message ?? "error"}`,
+        { rpcMethod: method, rpcCode: json.error.code },
+      );
     return json ? (json.result ?? null) : null;
   }
 }
@@ -289,7 +317,11 @@ function decryptResourceChunks(
   const lens = chunkLens && chunkLens.length ? chunkLens : [ciphertext.length];
   const total = lens.reduce((a, n) => a + n, 0);
   if (total !== ciphertext.length) {
-    throw new Error("served ciphertext length does not match chunk lengths");
+    throw new DigSdkError(
+      "RPC_MALFORMED_RESPONSE",
+      "served ciphertext length does not match chunk lengths",
+      { rpcMethod: "dig.getContent", expected: String(total), actual: String(ciphertext.length) },
+    );
   }
   if (lens.length === 1) return wasm.decryptChunk(keyHex, ciphertext);
   const parts: Uint8Array[] = [];
@@ -309,7 +341,8 @@ function decryptResourceChunks(
 
 function undefinedFetch(): typeof fetch {
   return (() => {
-    throw new Error(
+    throw new DigSdkError(
+      "INVALID_ARGUMENT",
       "No global fetch available. Pass { fetch } to DigClient (Node < 18 needs a fetch polyfill).",
     );
   }) as unknown as typeof fetch;

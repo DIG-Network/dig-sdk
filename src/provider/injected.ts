@@ -10,6 +10,7 @@
 import type { InjectedChiaProvider, WalletBackend } from "../types.js";
 import { WALLET_METHODS, DEFAULT_CHAIN } from "../methods.js";
 import type { WalletTransport } from "./transport.js";
+import { DigSdkError } from "../errors.js";
 
 /** The injected provider on the current global, or undefined when not running in a DIG Browser. */
 export function getInjectedProvider(): InjectedChiaProvider | undefined {
@@ -60,7 +61,11 @@ export class InjectedTransport implements WalletTransport {
 
   async request(method: string, params: unknown): Promise<unknown> {
     if (!this.supports(method)) {
-      throw new Error(`The DIG Browser wallet does not support "${method}".`);
+      throw new DigSdkError(
+        "METHOD_NOT_SUPPORTED",
+        `The DIG Browser wallet does not support "${method}".`,
+        { method },
+      );
     }
     return this.provider.request({ method, params });
   }
