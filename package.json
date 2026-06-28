@@ -1,0 +1,82 @@
+{
+  "name": "@dignetwork/dig-sdk",
+  "version": "0.1.0",
+  "description": "The typed front door for building dapps on the DIG Network: a Chia wallet abstraction (ChiaProvider) plus DigClient read-crypto (verify + decrypt content by URN) and the canonical CHIP-0035 spend builder. ESM + CJS + .d.ts, browser + Node 18+.",
+  "license": "MIT",
+  "author": "DIG Network",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DIG-Network/dig-sdk"
+  },
+  "homepage": "https://github.com/DIG-Network/dig-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/DIG-Network/dig-sdk/issues"
+  },
+  "keywords": [
+    "dig",
+    "dig-network",
+    "chia",
+    "chip-0002",
+    "chip-0035",
+    "wallet",
+    "walletconnect",
+    "sage",
+    "datalayer",
+    "decentralized",
+    "content"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./spend": {
+      "types": "./dist/spend.d.ts",
+      "import": "./dist/spend.js",
+      "require": "./dist/spend.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "vendor/dig_client.mjs",
+    "vendor/dig_client_bg.wasm",
+    "vendor/dig_client.d.ts",
+    "vendor/PROVENANCE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/",
+    "test:examples": "tsc -p tsconfig.examples.json --noEmit",
+    "verify": "npm run typecheck && npm run build && npm test",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@dignetwork/chip35-dl-coin-wasm": "^0.4.0"
+  },
+  "peerDependencies": {
+    "@walletconnect/sign-client": "^2.11.0"
+  },
+  "peerDependenciesMeta": {
+    "@walletconnect/sign-client": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
+  }
+}
