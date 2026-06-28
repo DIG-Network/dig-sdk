@@ -3,8 +3,10 @@
 // The SDK's "./spend" entry is `export * from "@dignetwork/chip35-dl-coin-wasm"`, so EVERY symbol
 // the canonical spend builder exports flows through unchanged. When chip35 0.5.0 added the asset
 // builders (NFT / DID / CAT / CHIP-0007 metadata / offer codec / sha256), the SDK had to bump its
-// dependency `^0.4.0` -> `^0.5.0` for them to appear here. This test pins that contract: it fails on
-// 0.4.0 (whose surface lacks these symbols) and passes once the SDK consumes 0.5.0.
+// dependency `^0.4.0` -> `^0.5.0` for them to appear here. chip35 0.7.0 then added the in-dapp
+// monetization spends (#46: payment + receipt verify + NFT/collection gating), so the SDK bumped
+// `^0.5.0` -> `^0.7.0` to surface them. This test pins that contract: it fails on a chip35 that
+// lacks these symbols and passes once the SDK consumes the version that exports them.
 //
 // Why we assert against the dependency's own export surface rather than importing ../dist/spend.js
 // and reading off its keys: chip35-dl-coin-wasm is wasm-bindgen "bundler"-target glue whose entry
@@ -47,6 +49,18 @@ const NEW_0_5_0_EXPORTS = [
   "decodeOffer",
 ];
 
+// The in-dapp monetization spends + read helpers introduced in chip35-dl-coin-wasm 0.7.0 (#46).
+// The dep bump to ^0.7.0 is what makes these reachable via the "./spend" re-export, and they back
+// the high-level `Paywall` helper on the main SDK surface.
+const NEW_0_7_0_EXPORTS = [
+  "buildPayment",
+  "buildCatPayment",
+  "paymentNonce",
+  "verifyPaymentReceipt",
+  "proveNftOwnership",
+  "proveCollectionMembership",
+];
+
 // Core CHIP-0035 store-coin builders that must remain available across the bump.
 const CORE_STORE_EXPORTS = [
   "mintStore",
@@ -61,19 +75,28 @@ const CORE_STORE_EXPORTS = [
   "init",
 ];
 
-test("SDK depends on chip35-dl-coin-wasm >= 0.5.0", () => {
+test("SDK depends on chip35-dl-coin-wasm >= 0.7.0", () => {
   const [maj, min] = chip35Pkg.version.split(".").map(Number);
   assert.ok(
-    maj > 0 || (maj === 0 && min >= 5),
-    `resolved chip35-dl-coin-wasm is ${chip35Pkg.version}, expected >= 0.5.0`,
+    maj > 0 || (maj === 0 && min >= 7),
+    `resolved chip35-dl-coin-wasm is ${chip35Pkg.version}, expected >= 0.7.0`,
   );
 });
 
-test("/spend re-exports the new chip35 0.5.0 asset builders", () => {
+test("/spend re-exports the chip35 0.5.0 asset builders", () => {
   for (const name of NEW_0_5_0_EXPORTS) {
     assert.ok(
       chip35Exports.has(name),
       `@dignetwork/dig-sdk/spend must re-export ${name} (requires chip35-dl-coin-wasm >= 0.5.0)`,
+    );
+  }
+});
+
+test("/spend re-exports the new chip35 0.7.0 monetization spends (#46)", () => {
+  for (const name of NEW_0_7_0_EXPORTS) {
+    assert.ok(
+      chip35Exports.has(name),
+      `@dignetwork/dig-sdk/spend must re-export ${name} (requires chip35-dl-coin-wasm >= 0.7.0)`,
     );
   }
 });
