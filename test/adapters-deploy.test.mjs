@@ -6,7 +6,8 @@
 //     digstore-cli recommends (deploy.rs::resolve_deploy_key).
 //   • buildDeployEnv: the env overlay carrying the secrets to the child.
 //   • parseDeployResult: the `digstore deploy --json` stdout object -> a friendly
-//     { capsule, storeId, root, digUrl, hubUrl } (the URLs derived the same way digstore does).
+//     { capsule, storeId, root, chiaUrl, digUrl, hubUrl } (the URLs derived the same way digstore
+//     does — chiaUrl is the user-facing content-open address, matching digstore's `content_address`).
 //
 // No child process is spawned here — these are the pure pieces the Vite/Next adapters compose.
 
@@ -83,10 +84,28 @@ test("parseDeployResult: extracts capsule, store id, root and derives URLs", () 
   assert.equal(out.capsule, capsule);
   assert.equal(out.storeId, STORE);
   assert.equal(out.root, ROOT);
-  // dig:// URN names the store; hub view URL mirrors digstore deploy's hub_url().
-  assert.equal(out.digUrl, `dig://${STORE}`);
+  // chia:// is the user-facing content-open address — matches digstore's printed `content_address`
+  // (chia://<storeId>:<rootHash>/). The browser/extension register chia:// for opening DIG content.
+  assert.equal(out.chiaUrl, `chia://${STORE}:${ROOT}/`);
+  // digUrl is a DEPRECATED alias carrying the SAME chia:// value (back-compat for consumers that
+  // read `digUrl`; framework-adapters still read it). It is NOT a §21 remote dig:// locator.
+  assert.equal(out.digUrl, `chia://${STORE}:${ROOT}/`);
+  // hub view URL mirrors digstore deploy's hub_url().
   assert.equal(out.hubUrl, `https://hub.dig.net/stores/${STORE}`);
   assert.equal(out.pushed, true);
+});
+
+test("parseDeployResult: prefers the digstore-emitted content_address for chiaUrl when present", () => {
+  // digstore deploy --preview --json prints `content_address: chia://<store>:<root>/`. When the
+  // deploy JSON carries it, the SDK must surface that exact value (single source of truth) rather
+  // than re-deriving — keeping the SDK's chiaUrl byte-identical to what digstore printed.
+  const capsule = `${STORE}:${ROOT}`;
+  const content = `chia://${STORE}:${ROOT}/`;
+  const out = parseDeployResult(
+    JSON.stringify({ root: ROOT, capsule, content_address: content, pushed: true }),
+  );
+  assert.equal(out.chiaUrl, content);
+  assert.equal(out.digUrl, content);
 });
 
 test("parseDeployResult: tolerates extra JSON log lines, takes the last object", () => {

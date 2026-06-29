@@ -11,7 +11,7 @@ The typed front door for building dapps on the **DIG Network**. One `npm i` give
 - **`@dignetwork/dig-sdk/spend`** — the canonical CHIP-0035 spend builder
   (`@dignetwork/chip35-dl-coin-wasm`) re-exported. Build store / NFT / CAT spends through the SDK
   and sign them with the wallet. Spends are **never** hand-rolled.
-- **`Paywall`** — a high-level **pay-to-unlock** helper. Charge XCH or a CAT (e.g. DIG) to unlock a
+- **`Paywall`** — a high-level **pay-to-unlock** helper. Charge XCH or a CAT (e.g. $DIG) to unlock a
   resource, then gate access by verifying the payment — or gate on holding an **NFT** / a
   **collection** membership. It composes `ChiaProvider` with the canonical monetization spends; the
   wasm builds every coin spend, the wallet signs it.
@@ -117,7 +117,7 @@ const { receipt, signature } = await paywall.requestPayment({
   memo: `unlock:${resourceId}:${userId}`,
 });
 
-// …or charge a CAT (e.g. DIG) by passing its tail hash:
+// …or charge a CAT (e.g. $DIG) by passing its tail hash:
 await paywall.requestPayment({ amount: 100n, owner: dappOwnerPuzzleHashHex, assetId: digTailHashHex });
 
 // Later, gate access by re-checking the on-chain payment against the receipt:
@@ -223,7 +223,7 @@ things: injects a **`window.chia` dev wallet** during local `dev` (the same inje
 contract `ChiaProvider` detects in production, so the wallet path runs end-to-end locally), and
 ships your build to a **DIG capsule** via `digstore deploy --json` on a `publish` script.
 
-> Deploying **spends DIG** (each deploy publishes a new capsule), so it is a deliberate, credentialed
+> Deploying **spends $DIG** (each deploy publishes a new capsule), so it is a deliberate, credentialed
 > step — never wired into the default `build`. Config + secrets are read from your project's
 > `dig.toml` and `DIGSTORE_*` env vars, exactly like `digstore deploy`; the deploy key and store
 > salt come from the env only (never argv) so they don't leak. Requires the `digstore` CLI on PATH.
@@ -250,7 +250,8 @@ export default defineConfig({
 ```
 
 `digDeploy()` shells out to `digstore deploy --json`, ships the build dir to a new capsule, and
-prints the `dig://` + `https://hub.dig.net/stores/<id>` URL. Disable the dev shim with
+prints the `chia://` content-open address + the `https://hub.dig.net/stores/<id>` DIGHUb view URL
+(`result.chiaUrl` / `result.hubUrl`; `result.digUrl` is a deprecated alias of `chiaUrl`). Disable the dev shim with
 `digVite({ devWallet: false })`; set its mock address with `digVite({ devWalletOptions: { address } })`.
 
 ### Next.js (static export) — `@dignetwork/dig-sdk/next`

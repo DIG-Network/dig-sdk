@@ -9,7 +9,8 @@
 //      ships only in dev.
 //   2. PUBLISH: `digDeploy()` ships the static-export output (`out/` by default — what
 //      `next build` writes with `output: "export"`) to a DIG capsule via `digstore deploy --json`,
-//      printing the dig:// + DIGHub URL. Call it from a `publish` script after the build.
+//      printing the chia:// content-open URL + the DIGHUb view URL. Call it from a `publish` script
+//      after the build.
 //
 // Next is an OPTIONAL peer: this module imports nothing from "next". The publish runner is the
 // shared Node-only `runDeploy`.

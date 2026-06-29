@@ -2,7 +2,7 @@
 //
 // It composes the pure pieces (load dig.toml → resolve config → build argv + env), spawns the
 // installed `digstore` binary with `deploy --json`, and parses the result into a friendly
-// DeployResult ({ capsule, digUrl, hubUrl }). It is intentionally thin: ALL deploy logic lives in
+// DeployResult ({ capsule, chiaUrl, hubUrl }). It is intentionally thin: ALL deploy logic lives in
 // `digstore deploy` (the canonical deployer — advances the on-chain root, stages, pushes the
 // capsule); this only marshals config in and the result out.
 //
@@ -113,7 +113,8 @@ export async function runDeploy(options: RunDeployOptions = {}): Promise<DeployR
 
   const result = parseDeployResult(stdout);
   log(`✓ deployed capsule ${result.capsule}`);
-  log(`  dig://  ${result.digUrl}`);
+  // chia:// is the user-facing content-open address (what they open in the DIG Browser/extension).
+  log(`  open    ${result.chiaUrl}`);
   log(`  view    ${result.hubUrl}`);
   return result;
 }
