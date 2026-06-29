@@ -182,6 +182,8 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 | `deriveUrnKeys({ urn, salt? })` | The root-independent `{ retrievalKey, decryptionKey }` for a URN. |
 | `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)` | The individual derivations. |
 | `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)` | Lower-level read-crypto. |
+| `getCollection({ launcherIds, did? }, opts?)` | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`. |
+| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)` | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
 | `wasm()` | The raw SRI-verified read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …). |
 
 ### `Paywall`
