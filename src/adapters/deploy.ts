@@ -1,16 +1,18 @@
 // The pure glue around `digstore deploy --json`: build the child argv + env, and parse the result.
 //
 // The adapters SHELL OUT to the installed `digstore` binary (the canonical deployer — it advances
-// the on-chain root, stages the build dir, and pushes the new capsule to DIGHub). They never
+// the on-chain root, stages the build dir, and pushes the new capsule to DIGHUb). They never
 // re-implement deploy. These helpers are the deterministic, side-effect-free pieces:
 //
 //   • buildDeployArgs  — resolved config → argv (always `deploy --json`, only set flags).
 //   • buildDeployEnv   — resolved config → the env overlay carrying the SECRETS to the child, so the
 //                        deploy key / salt are NEVER on the argv (process-table leak), matching
 //                        digstore-cli's own guidance (deploy.rs).
-//   • parseDeployResult— `digstore deploy --json` stdout → { capsule, storeId, root, digUrl, hubUrl,
-//                        pushed }, deriving the URLs exactly as digstore does (capsule = storeId:root;
-//                        hub view = https://hub.dig.net/stores/<id>; dig:// names the store).
+//   • parseDeployResult— `digstore deploy --json` stdout → { capsule, storeId, root, chiaUrl,
+//                        digUrl, hubUrl, pushed }, deriving the URLs exactly as digstore does
+//                        (capsule = storeId:root; hub view = https://hub.dig.net/stores/<id>;
+//                        chiaUrl = the user-facing content-open address chia://<store>:<root>/,
+//                        matching digstore's printed `content_address`).
 
 import type { ResolvedDeployConfig } from "./config.js";
 import { DigSdkError } from "../errors.js";
@@ -63,11 +65,21 @@ export interface DeployResult {
   storeId: string;
   /** The new on-chain root (64-hex). */
   root: string;
-  /** The dig:// URL naming this store (resolves through the network to the latest version). */
+  /**
+   * The user-facing content-open address `chia://<storeId>:<rootHash>/` — what a user types/clicks
+   * to open this verified capsule in the DIG Browser / extension (the scheme they register). This
+   * matches digstore deploy's printed `content_address` exactly. (Distinct from the §21 remote
+   * locator `dig://<host>/<store_id>` and the `urn:dig:` namespace, which stay `dig://`.)
+   */
+  chiaUrl: string;
+  /**
+   * @deprecated Use {@link chiaUrl}. Kept as a back-compat alias for consumers that read `digUrl`;
+   * it now carries the SAME `chia://<storeId>:<rootHash>/` content-open value (NOT a `dig://` URL).
+   */
   digUrl: string;
-  /** The human "view it" URL on DIGHub (the same one `digstore deploy` prints). */
+  /** The human "view it" URL on DIGHUb (the same one `digstore deploy` prints). */
   hubUrl: string;
-  /** Whether the capsule was pushed to DIGHub (when the JSON reported it). */
+  /** Whether the capsule was pushed to DIGHUb (when the JSON reported it). */
   pushed?: boolean;
 }
 
@@ -140,13 +152,24 @@ export function parseDeployResult(stdout: string): DeployResult {
   const storeId = m[1].toLowerCase();
   const root = (typeof obj.root === "string" ? obj.root : m[2]).toLowerCase();
 
+  // The user-facing content-open address. Prefer the value digstore itself printed
+  // (`content_address`, the single source of truth — digstore deploy.rs::branding::content_url) so
+  // the SDK stays byte-identical to the CLI; otherwise derive it the same way digstore does:
+  // chia://<storeId>:<rootHash>/ (trailing slash, no resource). This is what a user opens in the
+  // DIG Browser/extension — NOT the §21 remote dig:// locator.
+  const chiaUrl =
+    typeof obj.content_address === "string"
+      ? obj.content_address
+      : `chia://${storeId}:${root}/`;
+
   return {
     capsule,
     storeId,
     root,
-    // dig:// names the store on the network (resolves to its latest published version).
-    digUrl: `dig://${storeId}`,
-    // Mirrors digstore deploy.rs::hub_url — the public DIGHub view of an owned store.
+    chiaUrl,
+    // Deprecated alias: same chia:// content-open value (back-compat for consumers reading digUrl).
+    digUrl: chiaUrl,
+    // Mirrors digstore deploy.rs::hub_url — the public DIGHUb view of an owned store.
     hubUrl: `https://hub.dig.net/stores/${storeId}`,
     pushed: typeof obj.pushed === "boolean" ? obj.pushed : undefined,
   };

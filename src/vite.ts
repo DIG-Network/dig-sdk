@@ -6,8 +6,9 @@
 //      — the SAME injected-provider contract the SDK's ChiaProvider detects in production.
 //   2. PUBLISH: it exposes `digDeploy()` — call it from a `publish` script (after `vite build`) to
 //      shell out to `digstore deploy --json`, shipping the build dir → a new capsule and printing
-//      the dig:// + DIGHub URL. (Deploy is a deliberate, credentialed step — it spends DIG — so it
-//      is NOT wired into the default `vite build`; you opt in via a `publish` script.)
+//      the chia:// content-open URL + the DIGHUb view URL. (Deploy is a deliberate, credentialed
+//      step — it spends $DIG — so it is NOT wired into the default `vite build`; opt in via a
+//      `publish` script.)
 //
 // Vite is an OPTIONAL peer dependency: this module declares no hard import of "vite". The returned
 // object is a structurally-valid Vite Plugin (name + transformIndexHtml), typed loosely so the SDK
