@@ -19,7 +19,7 @@
 import type { ChiaProvider } from "./provider/chia-provider.js";
 import { DigSdkError } from "./errors.js";
 
-/** A payment asset: XCH, or a CAT identified by its tail hash (e.g. DIG). */
+/** A payment asset: XCH, or a CAT identified by its tail hash (e.g. $DIG). */
 export type PaymentAssetSpec =
   | { xch: true; assetId?: undefined }
   | { xch?: false; assetId: string };

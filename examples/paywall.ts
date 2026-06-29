@@ -25,7 +25,7 @@ export async function chargeForAccess(): Promise<void> {
   });
   console.log(signature, nonce, receipt);
 
-  // Charge a CAT (e.g. DIG) instead of XCH by passing assetId:
+  // Charge a CAT (e.g. $DIG) instead of XCH by passing assetId:
   await paywall.requestPayment({
     amount: 100n,
     owner: dappOwnerPuzzleHashHex,
