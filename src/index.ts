@@ -81,6 +81,10 @@ export type {
   ReadOptions,
   ReadResult,
   UrnKeys,
+  CollectionItem,
+  CollectionItemMetadata,
+  CollectionItemsPage,
+  CollectionMeta,
 } from "./types.js";
 
 // ---- Typed error taxonomy (stable machine codes) ----

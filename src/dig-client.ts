@@ -18,7 +18,13 @@
 import { loadDigClientWasm } from "./loader.js";
 import type { DigClientWasm } from "./wasm.js";
 import { parseUrn } from "./urn.js";
-import type { ReadOptions, ReadResult, UrnKeys } from "./types.js";
+import type {
+  CollectionItemsPage,
+  CollectionMeta,
+  ReadOptions,
+  ReadResult,
+  UrnKeys,
+} from "./types.js";
 import { DigSdkError } from "./errors.js";
 
 /** The default public dig RPC endpoint. */
@@ -222,6 +228,70 @@ export class DigClient {
         decrypted: false,
       };
     }
+  }
+
+  /**
+   * Read a collection's public, owner-independent facts (creator DID, item count, uniform royalty)
+   * from the dig RPC (`dig.getCollection`). The collection's item set is its NFT launcher ids — the
+   * authoritative, owner-independent anchor the mint produced (a DID-attributed NFT is hinted to its
+   * OWNER at mint, not to the creator DID, so launcher ids — not the DID — are the read key). Pass
+   * the optional `did` to have it echoed back and recorded as the declared creator.
+   *
+   * No wallet, no read-crypto wasm — a plain JSON-RPC read. Throws a coded {@link DigSdkError} on a
+   * transport/RPC failure (never a "not found": an empty/partly-confirmed set just resolves to fewer
+   * items).
+   *
+   * @example
+   * const meta = await dig.getCollection({ launcherIds: ["ab…", "cd…"], did: "ef…" });
+   * console.log(meta.resolved_count, meta.royalty_basis_points);
+   */
+  async getCollection(
+    input: { launcherIds: string[]; did?: string | null },
+    opts: ReadOptions = {},
+  ): Promise<CollectionMeta> {
+    const rpc = opts.rpc ?? this.rpc;
+    const params: Record<string, unknown> = { launcher_ids: input.launcherIds };
+    if (input.did) params.did = input.did;
+    const r = await this.rpcCall<CollectionMeta>(rpc, "dig.getCollection", params);
+    if (!r)
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        "The content network returned no collection facts for this request.",
+        { rpcMethod: "dig.getCollection" },
+      );
+    return r;
+  }
+
+  /**
+   * Read a deterministic, paginated page of a collection's items (`dig.listCollectionItems`), each
+   * resolved to its CURRENT on-chain state — current owner, royalty, and CHIP-0007 metadata — by the
+   * RPC walking the singleton lineage forward to the live tip (so the owner is never the stale
+   * mint-time owner). Items come back in the input launcher-id order. `limit` is clamped to the
+   * server cap (200); `offset` defaults to 0.
+   *
+   * Throws a coded {@link DigSdkError} on a transport/RPC failure.
+   *
+   * @example
+   * let page = await dig.listCollectionItems({ launcherIds, limit: 50 });
+   * for (const item of page.items) console.log(item.launcher_id, item.owner_puzzle_hash);
+   * // page.next_offset is null on the last page.
+   */
+  async listCollectionItems(
+    input: { launcherIds: string[]; offset?: number; limit?: number },
+    opts: ReadOptions = {},
+  ): Promise<CollectionItemsPage> {
+    const rpc = opts.rpc ?? this.rpc;
+    const params: Record<string, unknown> = { launcher_ids: input.launcherIds };
+    if (input.offset !== undefined) params.offset = input.offset;
+    if (input.limit !== undefined) params.limit = input.limit;
+    const r = await this.rpcCall<CollectionItemsPage>(rpc, "dig.listCollectionItems", params);
+    if (!r)
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        "The content network returned no collection items for this request.",
+        { rpcMethod: "dig.listCollectionItems" },
+      );
+    return r;
   }
 
   // Stream the FULL ciphertext for a resource from the RPC by retrieval key, reassembling 3-MiB
