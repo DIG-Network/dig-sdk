@@ -82,6 +82,81 @@ export interface ReadResult {
   decrypted: boolean;
 }
 
+/**
+ * The on-chain CHIP-0007 metadata of a collection item, as returned by the dig RPC. Hashes are
+ * lowercase-hex 32-byte digests (or `null` when absent); URIs are the dig:// / https locations the
+ * bytes are served from. Mirrors the on-chain `NftMetadata` (the dig RPC decodes it from the NFT's
+ * metadata pointer). All fields optional/nullable so a non-standard metadata updater still parses.
+ */
+export interface CollectionItemMetadata {
+  /** 1-based edition number within the series. */
+  edition_number?: number;
+  /** Total editions in the series. */
+  edition_total?: number;
+  /** Primary media URIs (dig:// first, https fallback by convention). */
+  data_uris?: string[];
+  /** `sha256(media_bytes)`, lowercase hex, or null. */
+  data_hash?: string | null;
+  /** CHIP-0007 metadata-JSON URIs. */
+  metadata_uris?: string[];
+  /** `sha256(metadata_json_bytes)`, lowercase hex, or null. */
+  metadata_hash?: string | null;
+  /** License document URIs. */
+  license_uris?: string[];
+  /** `sha256(license_bytes)`, lowercase hex, or null. */
+  license_hash?: string | null;
+}
+
+/**
+ * One NFT in a collection, resolved to its CURRENT on-chain state by `DigClient.listCollectionItems`
+ * (owner-independent: the reported owner is live, walked forward through the singleton lineage, not
+ * the mint-time owner). All hashes/ids are lowercase hex.
+ */
+export interface CollectionItem {
+  /** The NFT's stable launcher id (its `nft1…` id encodes this), lowercase hex. */
+  launcher_id: string;
+  /** The current (unspent) coin id of the NFT singleton, lowercase hex. */
+  coin_id: string;
+  /** The current assigned owner DID launcher id (lowercase hex), or null when unattributed. */
+  owner_did: string | null;
+  /** The puzzle hash royalties are paid to in offer trades, lowercase hex. */
+  royalty_puzzle_hash: string;
+  /** Royalty as hundredths of a percent (300 = 3%). */
+  royalty_basis_points: number;
+  /** The CURRENT owner (p2) puzzle hash — where the NFT lives now, lowercase hex. */
+  owner_puzzle_hash: string;
+  /** The decoded on-chain CHIP-0007 metadata, or null when it does not decode. */
+  metadata: CollectionItemMetadata | null;
+}
+
+/** A deterministic, paginated page of collection items, from `DigClient.listCollectionItems`. */
+export interface CollectionItemsPage {
+  /** This page's items, in the requested (input launcher-id) order. */
+  items: CollectionItem[];
+  /** The offset this page started at. */
+  offset: number;
+  /** The page size requested (clamped to the server cap of 200). */
+  limit: number;
+  /** Total launcher ids in the requested collection set. */
+  total: number;
+  /** The offset of the next page, or null when this is the last page. */
+  next_offset: number | null;
+}
+
+/** Collection-level facts from `DigClient.getCollection` — derived from the resolved item set. */
+export interface CollectionMeta {
+  /** The creator DID launcher id the items AGREE on (lowercase hex), or null when mixed/none. */
+  did: string | null;
+  /** The DID the caller declared, echoed back (lowercase hex), or null. */
+  declared_did: string | null;
+  /** How many launcher ids were requested. */
+  item_count: number;
+  /** How many of those resolved to a live on-chain NFT. */
+  resolved_count: number;
+  /** The royalty (basis points) every item agrees on, or null when mixed. */
+  royalty_basis_points: number | null;
+}
+
 /** The two root-independent keys a URN maps to (derived client-side, nothing sent to the network). */
 export interface UrnKeys {
   storeId: string;
