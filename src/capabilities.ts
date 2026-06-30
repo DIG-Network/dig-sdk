@@ -93,7 +93,7 @@ const MODULES: readonly ModuleDescriptor[] = Object.freeze([
  * @example
  * import { capabilities } from "@dignetwork/dig-sdk";
  * const cap = capabilities();
- * cap.version;        // "0.1.0"
+ * cap.version;        // "0.2.0"
  * cap.walletMethods;  // ["chip0002_connect", …]
  * cap.errorCodes;     // ["WC_OPTIONS_REQUIRED", …]
  */
