@@ -312,7 +312,7 @@ full error catalogue without reading source, and every failure carries a stable 
 ```ts
 import { SDK_VERSION, capabilities } from "@dignetwork/dig-sdk";
 
-SDK_VERSION;       // "0.1.0" — the published version, injected from package.json at build time
+SDK_VERSION;       // "0.2.0" — the published version, injected from package.json at build time
 capabilities();    // (alias: describe()) the machine-readable surface ↓
 ```
 
