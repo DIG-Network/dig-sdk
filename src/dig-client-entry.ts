@@ -1,4 +1,4 @@
-// `@dignetwork/dig-sdk/dig-client` — the clean, publishable read-crypto subpath (#16).
+// `@dignetwork/dig-sdk/dig-client` — the clean read-crypto subpath (#16).
 //
 // WHAT THIS IS. A focused entry that exposes ONLY the DIG read-crypto: derive a URN's keys, verify
 // inclusion against an on-chain root, and decrypt content — the `DigClient`, its wasm loader, the
@@ -6,23 +6,12 @@
 // SRI-pinned, fail-closed integrity guarantee as the main entry. Consumers that want JUST the read
 // path (e.g. `dig-embed.js`, a worker) import from here instead of the whole SDK.
 //
-// WHY IT EXISTS (the #16 publish story). The canonical read-crypto wasm (`dig_client`) is built in
-// chip35_dl_coin's `dig-client-wasm` crate and is currently VENDORED across the ecosystem (this SDK
-// under vendor/, plus the extension/companion/hub). "Publishing `@dignetwork/dig-client`" means
-// publishing that wasm + glue + `.d.ts` from the canonical repo so nobody vendors it again.
-//
-//   • Until that package exists, this subpath IS the consumable read-crypto: the SDK ships the
-//     SRI-pinned wasm under vendor/ and this entry re-exports the loader/client over it. This
-//     already lets hub/dig-embed.js depend on `@dignetwork/dig-sdk/dig-client` instead of copying
-//     the wasm — the immediate win.
-//   • Once `@dignetwork/dig-client` is published from chip35_dl_coin, the ONLY change here is that
-//     `src/loader.ts` resolves the wasm from that package instead of vendor/ (the SRI digest stays
-//     the source of truth, in lock-step). This entry's public surface does NOT change, so consumers
-//     are unaffected. See vendor/PROVENANCE.md → "Publishing the read-crypto wasm" for the exact
-//     cross-repo steps and the versioning story.
-//
-// The vendored fallback is never broken by this entry — it is a re-export of the existing,
-// SRI-verified loader/client, not a reimplementation.
+// WHERE THE WASM COMES FROM. The canonical read-crypto wasm (`dig_client`) is built from digstore's
+// `dig-client-wasm` crate and published as `@dignetwork/dig-client` — so nobody vendors it. This SDK
+// depends on that package; `src/loader.ts` resolves the wasm from it (Node: the sync `nodejs` build;
+// browser: the `web` build) and SRI-verifies it against the pinned `DIG_CLIENT_WASM_SHA256` (the
+// same digest the package publishes in its `integrity.json`). This entry is a re-export of that
+// SRI-verified loader/client, not a reimplementation — its public surface is stable.
 
 // ---- Read-crypto client + loader ----
 export { DigClient, DEFAULT_RPC, type DigClientOptions } from "./dig-client.js";

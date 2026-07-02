@@ -1,6 +1,7 @@
-// DigClient read-crypto wired to the REAL vendored wasm (loaded + SRI-verified in Node). Proves
-// the loader works, the SRI digest matches, key derivation is deterministic, and an
-// encrypt→decrypt roundtrip closes under the URN-derived key (the read path the host stays blind to).
+// DigClient read-crypto wired to the REAL wasm from the published @dignetwork/dig-client package
+// (loaded + SRI-verified in Node). Proves the loader works, the SRI digest matches the package's
+// integrity.json, key derivation is deterministic, and an encrypt→decrypt roundtrip closes under
+// the URN-derived key (the read path the host stays blind to).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +13,7 @@ import {
 
 const STORE = "ab".repeat(32);
 
-test("loadDigClientWasm: loads + SRI-verifies the vendored wasm", async () => {
+test("loadDigClientWasm: loads + SRI-verifies the packaged wasm", async () => {
   const wasm = await loadDigClientWasm();
   assert.equal(typeof wasm.retrievalKey, "function");
   assert.equal(typeof wasm.deriveKey, "function");
@@ -22,11 +23,13 @@ test("loadDigClientWasm: loads + SRI-verifies the vendored wasm", async () => {
   assert.equal(typeof wasm.version(), "string");
 });
 
-test("SRI digest constant matches the canonical ecosystem digest", () => {
-  assert.equal(
-    DIG_CLIENT_WASM_SHA256,
-    "ff486be806f908a2a90780e499a04dbd34e10e3b97be0470cb9ee841a1e49e77",
-  );
+test("SRI digest constant matches the published @dignetwork/dig-client integrity.json", async () => {
+  // The single source of truth for the wasm integrity is the digest the package publishes in
+  // integrity.json. The SDK pins that exact value and fails closed on a mismatch.
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const integrity = require("@dignetwork/dig-client/integrity.json");
+  assert.equal(DIG_CLIENT_WASM_SHA256, integrity.sha256);
 });
 
 test("retrievalKey is SHA-256(canonical URN): 64-hex, deterministic, key-sensitive", async () => {

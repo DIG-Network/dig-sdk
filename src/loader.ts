@@ -1,15 +1,20 @@
-// Cross-target loader for the vendored `dig_client` read-crypto WASM.
+// Cross-target loader for the `dig_client` read-crypto WASM.
 //
-// The wasm is the SAME artifact the DIG Browser, extension, companion, and hub all run — vendored
-// under vendor/ with a PROVENANCE note and pinned SRI (see vendor/PROVENANCE.md). We NEVER run it
-// unverified: we obtain the raw bytes, SHA-256 them, compare against the pinned digest, and only
-// then hand the verified bytes to wasm-bindgen's init. A mismatch (tampered / wrong artifact)
-// throws — the reader FAILS CLOSED rather than running unverified crypto.
+// The wasm is consumed from the published `@dignetwork/dig-client` package (the installable form of
+// digstore's dig-client-wasm crate) — the SAME artifact the DIG Browser, extension, node, and hub
+// run. We NEVER run it unverified: we obtain the package's raw wasm bytes, SHA-256 them, compare
+// against the pinned digest, and only then let the module's crypto run. A mismatch (tampered / wrong
+// artifact) throws — the reader FAILS CLOSED rather than running unverified crypto.
 //
-// Three runtimes are supported, auto-detected, with an escape hatch (`configureWasm`):
-//   • Node / Bun        — read vendor/ files from the package directory (fs + node:crypto).
-//   • Browser (bundled)  — the consumer's bundler can resolve the vendor files; if it can't, the
-//                         consumer supplies bytes via `configureWasm({ wasmBytes, glueUrl })`.
+// Two targets are consumed from the one package, auto-detected, with an escape hatch
+// (`configureWasm`):
+//   • Node / Bun          — `@dignetwork/dig-client/node`, the wasm-bindgen `nodejs` build. It reads
+//                            + instantiates the wasm synchronously on import; we independently
+//                            SHA-256-verify the shipped `dig_client_bg.wasm` and fail closed on a
+//                            mismatch.
+//   • Browser (bundler)   — `@dignetwork/dig-client/web`, the `--target web` build. We fetch the
+//                            package's `dig_client_bg.wasm`, SRI-verify the bytes, and hand them to
+//                            the module's async init.
 //   • Browser (no bundler) — `configureWasm` with a URL/bytes you serve yourself.
 //
 // Memoized: the wasm initializes at most once per process/page.
@@ -17,11 +22,15 @@
 import type { DigClientWasm } from "./wasm.js";
 import { DigSdkError } from "./errors.js";
 
-/** SHA-256 (lowercase hex) of vendor/dig_client_bg.wasm — the SRI digest. Fail closed on mismatch. */
+/**
+ * SHA-256 (lowercase hex) of `@dignetwork/dig-client`'s `dig_client_bg.wasm` — the SRI digest. It
+ * is the canonical trust anchor (pinned regardless of the npm semver), mirrored by the package's
+ * `integrity.json` `sha256`. Fail closed on a mismatch.
+ */
 export const DIG_CLIENT_WASM_SHA256 =
-  "ff486be806f908a2a90780e499a04dbd34e10e3b97be0470cb9ee841a1e49e77";
+  "8c983561eabca34778abf698ca7c2fba36117f87282ca649079599ef7d1b1156";
 
-/** Optional explicit wasm inputs, for environments where auto-resolution can't find vendor/. */
+/** Optional explicit wasm inputs, for environments where package resolution can't reach the wasm. */
 export interface WasmConfig {
   /**
    * The wasm bytes (already loaded). When provided, SRI is still enforced unless `skipIntegrity`.
@@ -29,13 +38,13 @@ export interface WasmConfig {
    */
   wasmBytes?: BufferSource;
   /**
-   * URL to the wasm-bindgen glue module (vendor/dig_client.mjs) for browser dynamic import. When
-   * omitted in a browser, the loader tries to import the glue relative to this module.
+   * URL to the wasm-bindgen `web` glue module for browser dynamic import. When omitted in a browser,
+   * the loader imports `@dignetwork/dig-client/web` (the bundler resolves it).
    */
   glueUrl?: string;
   /**
    * URL to fetch the wasm bytes from (browser) when `wasmBytes` is not supplied. The fetched bytes
-   * are SRI-verified before init.
+   * are SRI-verified before init. Defaults to the package's `dig_client_bg.wasm`.
    */
   wasmUrl?: string;
   /** Skip the SRI check. Only for tests / trusted custom builds — NOT recommended. */
@@ -89,44 +98,71 @@ function assertIntegrity(hex: string): void {
   }
 }
 
-// Read the vendored glue URL + wasm bytes for Node from the package's vendor/ directory.
-async function loadNode(): Promise<{ glueHref: string; bytes: BufferSource }> {
+// The read-crypto function surface the SDK uses (a subset of the package's exports). Both the node
+// and web builds export these camelCase functions at the module top level.
+type DigClientModule = DigClientWasm & {
+  default?: (input: { module_or_path: BufferSource }) => Promise<unknown>;
+};
+
+// Node: consume the `--target nodejs` build. It reads `dig_client_bg.wasm` from the package and
+// instantiates SYNCHRONOUSLY on import, so its functions are ready immediately (no init call). We
+// independently SHA-256-verify the shipped wasm and fail closed on a mismatch — so a tampered
+// package binary refuses to run even though wasm-bindgen already loaded it.
+async function loadNode(): Promise<DigClientWasm> {
+  const { createRequire } = await import("node:module");
   const { readFile } = await import("node:fs/promises");
-  const { fileURLToPath, pathToFileURL } = await import("node:url");
-  const path = await import("node:path");
-  // This module lives in dist/; vendor/ sits at the package root, one level up.
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const vendorDir = path.resolve(here, "..", "vendor");
-  const wasmPath = path.join(vendorDir, "dig_client_bg.wasm");
-  const gluePath = path.join(vendorDir, "dig_client.mjs");
+  const require = createRequire(import.meta.url);
+  const wasmPath = require.resolve("@dignetwork/dig-client/dig_client_bg.wasm");
   const buf = await readFile(wasmPath);
-  // Copy into a fresh ArrayBuffer-backed view so the type is a plain BufferSource (not the
-  // ArrayBufferLike/SharedArrayBuffer union the Node Buffer type widens to).
   const bytes = new Uint8Array(buf.byteLength);
   bytes.set(buf);
-  return { glueHref: pathToFileURL(gluePath).href, bytes };
+  assertIntegrity(await sha256Hex(bytes));
+  const mod = (await import("@dignetwork/dig-client/node")) as unknown as DigClientModule;
+  return mod as unknown as DigClientWasm;
 }
 
-// Resolve the glue URL + wasm bytes for a browser. Prefers explicit config; otherwise resolves
-// the vendored files relative to this module (works when the bundler copies vendor/ alongside).
-async function loadBrowser(): Promise<{ glueHref: string; bytes: BufferSource }> {
-  const glueHref =
-    _config.glueUrl ?? new URL("../vendor/dig_client.mjs", import.meta.url).href;
-  let bytes: BufferSource;
-  if (_config.wasmBytes) {
-    bytes = _config.wasmBytes;
-  } else {
-    const wasmUrl =
-      _config.wasmUrl ?? new URL("../vendor/dig_client_bg.wasm", import.meta.url).href;
-    const res = await fetch(wasmUrl);
-    if (!res.ok)
-      throw new DigSdkError("WASM_LOAD_FAILED", `dig-client wasm fetch failed (${res.status})`, {
-        httpStatus: res.status,
-        wasmUrl,
-      });
-    bytes = await res.arrayBuffer();
+// Browser: consume the `--target web` build (`@dignetwork/dig-client/web`).
+//
+// Two modes:
+//   • Caller-supplied bytes/URL (`configureWasm`) — the fail-closed path for CSP-strict apps or an
+//     untrusted CDN. We fetch (if a URL) the bytes, SHA-256-VERIFY them against the pinned digest,
+//     and hand the very bytes we checked to the glue's async init — so nothing runs unverified.
+//   • Default — call the glue's `init()` with no args. The `--target web` build resolves its
+//     sibling `dig_client_bg.wasm` relative to its OWN module URL (the bundler-correct way to
+//     locate a package asset) and instantiates it. Those bytes are the pinned package artifact
+//     (the SDK depends on an exact `@dignetwork/dig-client` version). Apps that need byte-level SRI
+//     over an untrusted delivery path use `configureWasm({ wasmUrl })` above.
+async function loadBrowser(): Promise<DigClientWasm> {
+  const glueHref = _config.glueUrl ?? "@dignetwork/dig-client/web";
+  const mod = (await import(/* @vite-ignore */ glueHref)) as unknown as DigClientModule;
+  if (typeof mod.default !== "function") {
+    throw new DigSdkError(
+      "WASM_LOAD_FAILED",
+      "dig-client web build exposed no init function (unexpected module shape)",
+      {},
+    );
   }
-  return { glueHref, bytes };
+  if (_config.wasmBytes || _config.wasmUrl) {
+    let bytes: BufferSource;
+    if (_config.wasmBytes) {
+      bytes = _config.wasmBytes;
+    } else {
+      const wasmUrl = _config.wasmUrl!;
+      const res = await fetch(wasmUrl);
+      if (!res.ok)
+        throw new DigSdkError("WASM_LOAD_FAILED", `dig-client wasm fetch failed (${res.status})`, {
+          httpStatus: res.status,
+          wasmUrl,
+        });
+      bytes = await res.arrayBuffer();
+    }
+    assertIntegrity(await sha256Hex(bytes));
+    await mod.default({ module_or_path: bytes });
+  } else {
+    // The glue resolves + instantiates its own sibling wasm (the pinned package artifact).
+    await (mod.default as unknown as () => Promise<unknown>)();
+  }
+  return mod as unknown as DigClientWasm;
 }
 
 /**
@@ -135,16 +171,7 @@ async function loadBrowser(): Promise<{ glueHref: string; bytes: BufferSource }>
  */
 export function loadDigClientWasm(): Promise<DigClientWasm> {
   if (_ready) return _ready;
-  _ready = (async () => {
-    const { glueHref, bytes } = isNode ? await loadNode() : await loadBrowser();
-    assertIntegrity(await sha256Hex(bytes));
-    const mod = (await import(/* @vite-ignore */ glueHref)) as {
-      default: (input: { module_or_path: BufferSource }) => Promise<unknown>;
-    } & Partial<DigClientWasm>;
-    // wasm-bindgen default export = async init; accepts raw bytes via { module_or_path }.
-    await mod.default({ module_or_path: bytes });
-    return mod as unknown as DigClientWasm;
-  })().catch((e) => {
+  _ready = (isNode ? loadNode() : loadBrowser()).catch((e) => {
     _ready = null; // allow a retry on transient load failure
     throw e;
   });

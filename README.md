@@ -328,7 +328,7 @@ capabilities();    // (alias: describe()) the machine-readable surface ↓
 | `transports` | `("injected" \| "walletconnect")[]` | The wallet transports. |
 | `chains` | `string[]` | CAIP-2 chains — `["chia:mainnet"]` (no testnet flow). |
 | `defaultRpc` | `string` | The default dig RPC endpoint `DigClient` reads from. |
-| `readCryptoWasmSha256` | `string` | SRI digest of the vendored read-crypto wasm (fail-closed on mismatch). |
+| `readCryptoWasmSha256` | `string` | SRI digest of the `@dignetwork/dig-client` read-crypto wasm (fail-closed on mismatch). |
 | `errorCodes` | `string[]` | The full stable error-code catalogue (see below). |
 
 ### Error codes
@@ -392,19 +392,22 @@ and is also returned by `capabilities().errorCodes`:
 ## Read-crypto wasm provenance
 
 `DigClient` runs the **same** `dig_client` read-crypto WASM the DIG Browser, the
-`dig-chrome-extension`, the `dig-companion`, and `hub.dig.net` use. It is vendored under `vendor/`,
-pinned by SHA-256 (`ff486be8…`), and **SRI-verified at load** — a tampered or wrong artifact
-**fails closed** rather than running unverified crypto. See `vendor/PROVENANCE.md`.
+`dig-chrome-extension`, the `dig-node`, and `hub.dig.net` use. The SDK consumes it from the
+published [`@dignetwork/dig-client`](https://www.npmjs.com/package/@dignetwork/dig-client) package
+(no vendoring): in Node the synchronous `nodejs` build, in the browser the `web` build. The wasm is
+pinned by SHA-256 (`DIG_CLIENT_WASM_SHA256`, the same digest the package publishes in its
+`integrity.json`) and **SRI-verified at load** — a tampered or wrong artifact **fails closed**
+rather than running unverified crypto.
 
 ### CSP-strict / no-bundler browsers
 
 The wasm is loaded lazily; in a bundler that resolves package files it is found automatically. If
-your environment can't resolve the vendored files (or your CSP blocks runtime fetches), fetch +
+your environment can't resolve the package files (or your CSP blocks runtime fetches), fetch +
 verify the bytes yourself and hand them in **before** the first read:
 
 ```ts
 import { configureWasm } from "@dignetwork/dig-sdk";
-configureWasm({ wasmBytes: myVerifiedBytes, glueUrl: "/dig-client/dig_client.mjs" });
+configureWasm({ wasmBytes: myVerifiedBytes, glueUrl: "/dig-client/dig_client.js" });
 ```
 
 ## License

@@ -1,6 +1,6 @@
-// The read-crypto WASM surface (the `dig_client` module built from chip35_dl_coin's
-// dig-client-wasm crate). These signatures mirror vendor/dig_client.d.ts. The SDK loads this wasm
-// lazily and SRI-verifies it before use (see loader.ts).
+// The read-crypto WASM surface (the `dig_client` module built from digstore's dig-client-wasm
+// crate). These signatures mirror the published `@dignetwork/dig-client` `dig_client.d.ts`. The SDK
+// loads this wasm lazily from that package and SRI-verifies it before use (see loader.ts).
 
 /** The read-crypto functions the SDK uses from the dig_client WASM. */
 export interface DigClientWasm {
