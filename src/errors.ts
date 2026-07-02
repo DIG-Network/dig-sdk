@@ -38,7 +38,7 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
   RPC_ERROR: "RPC_ERROR",
   /** The dig RPC returned a malformed / inconsistent payload (e.g. chunk-length mismatch). */
   RPC_MALFORMED_RESPONSE: "RPC_MALFORMED_RESPONSE",
-  /** The vendored read-crypto wasm failed its SRI integrity check — fail closed. */
+  /** The read-crypto wasm failed its SRI integrity check — fail closed. */
   WASM_INTEGRITY: "WASM_INTEGRITY",
   /** The read-crypto wasm could not be loaded (fetch/resolve failure). */
   WASM_LOAD_FAILED: "WASM_LOAD_FAILED",
