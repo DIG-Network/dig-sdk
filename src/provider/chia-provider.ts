@@ -23,15 +23,51 @@ import {
 import * as M from "./methods.js";
 import { DigSdkError } from "../errors.js";
 
+/**
+ * A connector id for the 'Browser Wallet vs WalletConnect' chooser (#63) — the discoverable,
+ * user-facing counterpart of the lower-level {@link WalletBackend}. `"browser-wallet"` is an alias
+ * for the `"injected"` backend, named to match the chooser UI label every DIG frontend uses.
+ */
+export type ConnectorId = "browser-wallet" | "walletconnect";
+
+/**
+ * One entry in {@link ChiaProvider.listConnectors}: a connector a chooser UI can offer, and
+ * whether it's currently usable.
+ */
+export interface ConnectorInfo {
+  /** The id to pass as `ConnectOptions.mode` once the user picks this connector. */
+  id: ConnectorId;
+  /** The underlying transport backend this connector selects. */
+  backend: WalletBackend;
+  /** Human-facing label ("Browser Wallet" / "WalletConnect") — the canonical chooser copy. */
+  label: string;
+  /**
+   * True iff this connector can be connected right now. Browser Wallet requires a detected
+   * injected `window.chia`; WalletConnect is always offered (its relay has no presence to detect).
+   */
+  available: boolean;
+}
+
 /** Options for `ChiaProvider.connect()`. */
 export interface ConnectOptions {
   /**
    * Connection mode:
-   *   • "auto" (default) — prefer the injected DIG wallet; fall back to WalletConnect if absent.
-   *   • "injected"       — require the injected wallet (throws if absent).
-   *   • "walletconnect"  — force the WalletConnect→Sage pairing.
+   *   • "auto" (default)     — prefer the injected DIG wallet; fall back to WalletConnect if
+   *                            absent. A convenience for callers that don't want to present a
+   *                            chooser; it never asks the user, so if BOTH a Browser Wallet and
+   *                            WalletConnect are viable it silently picks Browser Wallet — kept
+   *                            for backward compatibility with existing single-shot integrations.
+   *   • "browser-wallet"      — require the injected Browser Wallet (throws if absent). The
+   *                            explicit-preference value for a Connect chooser (see
+   *                            {@link ChiaProvider.listConnectors}); an alias of "injected".
+   *   • "injected"           — same as "browser-wallet" (kept for backward compatibility).
+   *   • "walletconnect"      — force the WalletConnect→Sage pairing.
+   *
+   * To offer the user a real choice — never auto-binding to whichever wallet happens to be
+   * injected — call {@link ChiaProvider.listConnectors} to enumerate what's available, let the
+   * user pick, then pass their pick's `id` (`"browser-wallet"` or `"walletconnect"`) as `mode`.
    */
-  mode?: "auto" | WalletBackend;
+  mode?: "auto" | WalletBackend | ConnectorId;
   /**
    * WalletConnect options, required for the WalletConnect fallback/force path (projectId +
    * metadata + onUri). Omit if you only target the injected DIG Browser wallet.
@@ -92,7 +128,10 @@ export class ChiaProvider {
    * injected DIG wallet and falls back to WalletConnect.
    */
   static async connect(options: ConnectOptions = {}): Promise<ChiaProvider> {
-    const mode = options.mode ?? "auto";
+    // "browser-wallet" (the chooser-facing connector id, #63) is an alias of "injected" (the
+    // transport/backend id) — normalize once so the rest of this method has one code path.
+    const rawMode = options.mode ?? "auto";
+    const mode = rawMode === "browser-wallet" ? "injected" : rawMode;
     const chain = options.chain ?? DEFAULT_CHAIN;
 
     const tryInjected = async (): Promise<ChiaProvider | null> => {
@@ -109,7 +148,7 @@ export class ChiaProvider {
           "WC_OPTIONS_REQUIRED",
           "WalletConnect options are required to connect via WalletConnect " +
             "(pass { walletConnect: { projectId, metadata, onUri } }).",
-          { mode },
+          { mode: rawMode },
         );
       }
       const transport = await WalletConnectTransport.connect({
@@ -125,7 +164,7 @@ export class ChiaProvider {
         throw new DigSdkError(
           "NO_INJECTED_WALLET",
           "No injected DIG wallet found. Open this page in the DIG Browser, or use mode 'auto'.",
-          { mode, acceptAnyInjected: !!options.acceptAnyInjected },
+          { mode: rawMode, acceptAnyInjected: !!options.acceptAnyInjected },
         );
       }
       return injected;
@@ -133,6 +172,35 @@ export class ChiaProvider {
     if (mode === "walletconnect") return tryWalletConnect();
     // auto
     return (await tryInjected()) ?? (await tryWalletConnect());
+  }
+
+  /**
+   * Enumerate the connectors a 'Browser Wallet vs WalletConnect' Connect chooser can offer (#63).
+   * Pure and side-effect-free — it only DETECTS what's usable right now, it never connects to
+   * anything — so a chooser UI built around it always surfaces the choice instead of silently
+   * auto-binding to whichever wallet happens to be injected.
+   *
+   * @example
+   * const connectors = ChiaProvider.listConnectors();
+   * // render a button per connector, disabling any with `available: false`
+   * const chosen = connectors.find((c) => c.id === userPick)!;
+   * const provider = await ChiaProvider.connect({ mode: chosen.id, walletConnect });
+   */
+  static listConnectors(options: { acceptAnyInjected?: boolean } = {}): ConnectorInfo[] {
+    return [
+      {
+        id: "browser-wallet",
+        backend: "injected",
+        label: "Browser Wallet",
+        available: isInjectedAvailable({ anyChia: options.acceptAnyInjected }),
+      },
+      {
+        id: "walletconnect",
+        backend: "walletconnect",
+        label: "WalletConnect",
+        available: true,
+      },
+    ];
   }
 
   /** Wrap an already-constructed transport (advanced / restored sessions). */

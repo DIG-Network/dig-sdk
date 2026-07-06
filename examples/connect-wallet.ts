@@ -41,3 +41,29 @@ export async function buildAndSignSpend(): Promise<void> {
   const aggregatedSignature = await provider.signCoinSpends([]);
   console.log(aggregatedSignature);
 }
+
+declare function renderChooser(connectors: ReturnType<typeof ChiaProvider.listConnectors>): Promise<string>;
+
+// Offer the user an explicit 'Browser Wallet' vs 'WalletConnect' choice instead of the silent
+// `mode: "auto"` preference above (#63) — never auto-bind to whichever wallet is injected.
+export async function connectWithChooser(): Promise<void> {
+  const connectors = ChiaProvider.listConnectors();
+  const chosenId = await renderChooser(connectors); // e.g. a two-button modal
+  const chosen = connectors.find((c) => c.id === chosenId);
+  if (!chosen) throw new Error(`unknown connector: ${chosenId}`);
+
+  const provider = await ChiaProvider.connect({
+    mode: chosen.id, // "browser-wallet" | "walletconnect"
+    walletConnect: {
+      projectId: "<walletconnect-cloud-project-id>",
+      metadata: {
+        name: "My DIG dapp",
+        description: "Built with @dignetwork/dig-sdk",
+        url: "https://my-dapp.example",
+        icons: ["https://my-dapp.example/icon.png"],
+      },
+      onUri: (uri) => showWalletConnectQr(uri),
+    },
+  });
+  console.log("connected via", provider.backend);
+}

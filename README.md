@@ -82,6 +82,36 @@ const { publicKey, signature } = await provider.signMessage("Login to My DIG dap
 If you only target the DIG Browser, drop `walletConnect` and use `mode: "injected"` (or `"auto"`,
 which still prefers injected). `provider.backend` tells you which transport connected.
 
+### Offer a chooser: 'Browser Wallet' vs 'WalletConnect'
+
+`mode: "auto"` above is a convenience that silently prefers the injected wallet — fine for a
+single-wallet-target dapp, but a user who has BOTH a DIG Browser wallet and Sage should get to
+pick. `ChiaProvider.listConnectors()` enumerates the connectors a chooser UI can offer, without
+connecting to either (no auto-pick):
+
+```ts
+import { ChiaProvider } from "@dignetwork/dig-sdk";
+
+const connectors = ChiaProvider.listConnectors();
+// → [
+//     { id: "browser-wallet", backend: "injected",      label: "Browser Wallet", available: true|false },
+//     { id: "walletconnect",  backend: "walletconnect",  label: "WalletConnect",  available: true },
+//   ]
+
+// Render one button per connector (disable any with `available: false`), then connect with the
+// user's pick — pass its `id` straight through as `mode`:
+const provider = await ChiaProvider.connect({
+  mode: chosenConnector.id, // "browser-wallet" | "walletconnect"
+  walletConnect, // only needed if the user picked "walletconnect"
+});
+```
+
+`"browser-wallet"` is an alias of `"injected"` — same transport, chooser-facing name. Browser
+Wallet is `available` only when an injected `window.chia` is detected; WalletConnect is always
+offered (its relay has no local presence to detect). Persist the user's last pick (e.g.
+`localStorage`) to pre-select it next time, but always let them switch — the SDK itself holds no
+UI state, that's the app's call.
+
 ## Build + sign a store spend
 
 ```ts
@@ -146,6 +176,7 @@ const access = await paywall.proveAccess({ parentSpend, owner, nft: nftLauncherI
 | Member | Description |
 |---|---|
 | `static connect(options)` | Connect a wallet. See **`ConnectOptions`** below. |
+| `static listConnectors(options?)` | Enumerate the connectors a chooser can offer — `{ id, backend, label, available }[]` for `"browser-wallet"` and `"walletconnect"`. Pure/side-effect-free (never connects); pass `{ acceptAnyInjected: true }` to widen Browser Wallet detection to any `window.chia`. |
 | `connectWallet(options)` | Convenience alias for `ChiaProvider.connect`. |
 | `backend` / `session` | The connected transport (`"injected"` \| `"walletconnect"`) and session descriptor. |
 | `getAddress()` | The wallet's receive address (cached). |
@@ -166,7 +197,7 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mode` | `"auto"` \| `"injected"` \| `"walletconnect"` | `"auto"` | `"auto"` prefers the injected DIG wallet and falls back to WalletConnect; `"injected"` requires the injected wallet (throws `NO_INJECTED_WALLET` if absent); `"walletconnect"` forces WalletConnect→Sage (throws `WC_OPTIONS_REQUIRED` if `walletConnect` is omitted). |
+| `mode` | `"auto"` \| `"injected"` \| `"browser-wallet"` \| `"walletconnect"` | `"auto"` | `"auto"` prefers the injected DIG wallet and falls back to WalletConnect (silent — kept for backward compatibility); `"browser-wallet"` (alias of `"injected"`) requires the injected wallet (throws `NO_INJECTED_WALLET` if absent) — pass this once the user picks it from `listConnectors()`; `"walletconnect"` forces WalletConnect→Sage (throws `WC_OPTIONS_REQUIRED` if `walletConnect` is omitted). |
 | `walletConnect` | `WalletConnectOptions` | — | Required for the WalletConnect fallback/force path (`projectId`, `metadata`, `onUri`). Omit if you only target the injected DIG Browser wallet. |
 | `chain` | `string` | `"chia:mainnet"` | CAIP-2 chain id. Mainnet only — there is no testnet flow. |
 | `acceptAnyInjected` | `boolean` | `false` | Accept any `window.chia` for the injected path, not just the DIG Browser's unspoofable `isDIG` provider. Use with care — a non-DIG provider is not feature-detected. |

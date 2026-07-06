@@ -81,6 +81,80 @@ test("connect(walletconnect) without options throws a clear error", async () => 
   );
 });
 
+// ---- #63: dual 'Browser Wallet' vs 'WalletConnect' chooser --------------------------------------
+//
+// ChiaProvider must never silently pick a wallet when a caller wants to offer the user a choice.
+// listConnectors() is the discoverable, side-effect-free enumeration a chooser UI renders from;
+// mode: "browser-wallet" is the explicit-preference alias a caller passes once the user picks.
+
+test("listConnectors: surfaces both connectors without connecting to either (no auto-pick)", async () => {
+  const fake = fakeInjected({ isDIG: true });
+  await withInjected(fake, () => {
+    const connectors = ChiaProvider.listConnectors();
+    assert.equal(connectors.length, 2);
+
+    const browserWallet = connectors.find((c) => c.id === "browser-wallet");
+    const walletConnect = connectors.find((c) => c.id === "walletconnect");
+    assert.ok(browserWallet, "browser-wallet connector must be listed");
+    assert.ok(walletConnect, "walletconnect connector must be listed");
+    assert.equal(browserWallet.backend, "injected");
+    assert.equal(browserWallet.label, "Browser Wallet");
+    assert.equal(browserWallet.available, true); // window.chia is present
+    assert.equal(walletConnect.backend, "walletconnect");
+    assert.equal(walletConnect.label, "WalletConnect");
+    assert.equal(walletConnect.available, true); // always offered
+
+    // Merely listing connectors must NEVER connect — no auto-pick, no side effects.
+    assert.equal(fake.calls.length, 0);
+    assert.equal(fake.provider.isConnected, false);
+  });
+});
+
+test("listConnectors: Browser Wallet is unavailable (but still listed) with no injected provider", async () => {
+  const prev = globalThis.chia;
+  delete globalThis.chia;
+  try {
+    const connectors = ChiaProvider.listConnectors();
+    const browserWallet = connectors.find((c) => c.id === "browser-wallet");
+    const walletConnect = connectors.find((c) => c.id === "walletconnect");
+    assert.equal(browserWallet.available, false);
+    assert.equal(walletConnect.available, true); // WalletConnect is always available
+  } finally {
+    if (prev !== undefined) globalThis.chia = prev;
+  }
+});
+
+test("connect(mode: 'browser-wallet') selects the injected transport (Browser Wallet)", async () => {
+  const fake = fakeInjected({
+    responses: { chia_getAddress: { address: "xch1chooserbrowser" } },
+  });
+  await withInjected(fake, async () => {
+    const provider = await ChiaProvider.connect({ mode: "browser-wallet" });
+    assert.equal(provider.backend, "injected");
+    assert.equal(await provider.getAddress(), "xch1chooserbrowser");
+  });
+});
+
+test("connect(mode: 'browser-wallet') without a wallet throws NO_INJECTED_WALLET", async () => {
+  const prev = globalThis.chia;
+  delete globalThis.chia;
+  try {
+    await assert.rejects(
+      () => ChiaProvider.connect({ mode: "browser-wallet" }),
+      /No injected DIG wallet/,
+    );
+  } finally {
+    if (prev !== undefined) globalThis.chia = prev;
+  }
+});
+
+test("connect(mode: 'walletconnect') is unaffected by the chooser addition (regression)", async () => {
+  await assert.rejects(
+    () => ChiaProvider.connect({ mode: "walletconnect" }),
+    /WalletConnect options are required/,
+  );
+});
+
 test("signMessage normalizes by-address response (0x-prefixed pubkey)", async () => {
   const fake = fakeInjected({
     responses: {
