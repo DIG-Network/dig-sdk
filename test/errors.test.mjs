@@ -105,6 +105,13 @@ test("ChiaProvider.connect mode=injected with no wallet throws NO_INJECTED_WALLE
   );
 });
 
+test("ChiaProvider.connect mode='browser-wallet' (chooser alias) with no wallet throws NO_INJECTED_WALLET", async () => {
+  await assert.rejects(
+    () => ChiaProvider.connect({ mode: "browser-wallet" }),
+    (e) => isDigSdkError(e, "NO_INJECTED_WALLET"),
+  );
+});
+
 test("ChiaProvider.connect mode=walletconnect without options throws WC_OPTIONS_REQUIRED", async () => {
   await assert.rejects(
     () => ChiaProvider.connect({ mode: "walletconnect" }),

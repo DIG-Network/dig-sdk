@@ -18,6 +18,8 @@ export {
   ChiaProvider,
   connectWallet,
   type ConnectOptions,
+  type ConnectorId,
+  type ConnectorInfo,
 } from "./provider/chia-provider.js";
 export {
   InjectedTransport,
