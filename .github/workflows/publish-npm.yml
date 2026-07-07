@@ -1,8 +1,9 @@
 name: publish-npm
 
-# Build the SDK (ESM + CJS + d.ts) and publish @dignetwork/dig-sdk to npmjs. Auth uses the
-# org-level NPM_TOKEN secret (must be granted to this repo in the org secret's repository-access
-# list) — the SAME pattern as chip35_dl_coin's publish-npm.yml. Runs when a GitHub Release is
+# Build the SDK (ESM + CJS + d.ts) and publish @dignetwork/dig-sdk to npmjs. Auth uses npm
+# Trusted Publishing (OIDC) — no NPM_TOKEN secret; npm exchanges this workflow run's GitHub OIDC
+# token for a short-lived publish token, provided the npm-side trusted publisher is configured for
+# org DIG-Network, repo dig-sdk, workflow publish-npm.yml. Runs when a GitHub Release is
 # published (tag-driven), or on manual dispatch. The package version published is whatever is in
 # package.json on the released commit — bump it before tagging.
 on:
@@ -19,6 +20,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -30,7 +32,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: 20
+          node-version: "22"
           cache: npm
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
@@ -39,7 +41,10 @@ jobs:
       - run: npm run build
       - run: npm run test:examples
       - run: npm test
+      # Trusted publishing requires npm CLI >= 11.5.1; Node 22 bundles npm 10.
+      - name: upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
       - name: publish to npmjs
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
