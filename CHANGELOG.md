@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.4.0] - 2026-07-18
+
+### Features
+- **spend:** Surface `bulkMintFunded` (funded multi-item bulk NFT mint) via the `/spend` re-export by bumping `@dignetwork/chip35-dl-coin-wasm` `^0.8.0` → `^0.13.0` (#221). (#305)
+
 ## [0.3.3] - 2026-07-18
 
 ### Chores

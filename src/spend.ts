@@ -11,12 +11,15 @@
 //
 // Exposed builders (see @dignetwork/chip35-dl-coin-wasm >= 0.8.0 for full signatures):
 //   - Store coins:  mintStore / meltStore / updateStoreMetadata / updateStoreOwnership / oracleSpend
-//   - Assets:       mintNft / bulkMint / createDid / issueCat
+//   - Assets:       mintNft / bulkMint / bulkMintFunded / createDid / issueCat
 //   - CHIP-0007:    buildChip0007Metadata / validateChip0007 / generateItemMetadata
 //   - Offers:       encodeOffer / decodeOffer
 //   - Monetization (#46, chip35 >= 0.7.0): buildPayment / buildCatPayment / paymentNonce /
 //                   verifyPaymentReceipt / proveNftOwnership / proveCollectionMembership
 //                   (these back the high-level `Paywall` helper on the main SDK surface).
+//   - Funded bulk mint (chip35 >= 0.13.0, #221/#305): bulkMintFunded — a multi-item bulk NFT mint
+//                   paid from an EXPLICIT funding coin (vs bulkMint's implicit funding), for callers
+//                   that fund the mint from a chosen coin.
 //   - Introspection (chip35 >= 0.8.0): version() (the loaded build's semver) and capabilities()
 //                   ({ name, version, builders, errorCodes }) — runtime self-description so an agent
 //                   can feature-gate on exactly which spend-builder build is loaded, with typed
