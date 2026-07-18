@@ -26,7 +26,7 @@ test("the read-crypto wasm resolves from node_modules/@dignetwork/dig-capsule-wa
   const wasmPath = require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
   assert.match(
     wasmPath.replace(/\\/g, "/"),
-    /node_modules\/@dignetwork\/dig-client\//,
+    /node_modules\/@dignetwork\/dig-capsule-wasm\//,
     "wasm must be resolved from the published package",
   );
 });
@@ -48,3 +48,4 @@ test("the package's shipped wasm matches its published integrity.json digest", (
   const integrity = require("@dignetwork/dig-capsule-wasm/integrity.json");
   assert.equal(sha, integrity.sha256);
 });
+

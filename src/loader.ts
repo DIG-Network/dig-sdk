@@ -28,7 +28,7 @@ import { DigSdkError } from "./errors.js";
  * `integrity.json` `sha256`. Fail closed on a mismatch.
  */
 export const DIG_CLIENT_WASM_SHA256 =
-  "8c983561eabca34778abf698ca7c2fba36117f87282ca649079599ef7d1b1156";
+  "a186fd2d6b348a7caa3112c51b666a6618fe7cf8bb56ad395a1fab4323f6ae7e";
 
 /** Optional explicit wasm inputs, for environments where package resolution can't reach the wasm. */
 export interface WasmConfig {
@@ -177,3 +177,4 @@ export function loadDigClientWasm(): Promise<DigClientWasm> {
   });
   return _ready;
 }
+
