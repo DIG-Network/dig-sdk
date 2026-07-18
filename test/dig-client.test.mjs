@@ -1,4 +1,4 @@
-// DigClient read-crypto wired to the REAL wasm from the published @dignetwork/dig-client package
+// DigClient read-crypto wired to the REAL wasm from the published @dignetwork/dig-capsule-wasm package
 // (loaded + SRI-verified in Node). Proves the loader works, the SRI digest matches the package's
 // integrity.json, key derivation is deterministic, and an encrypt→decrypt roundtrip closes under
 // the URN-derived key (the read path the host stays blind to).
@@ -23,12 +23,12 @@ test("loadDigClientWasm: loads + SRI-verifies the packaged wasm", async () => {
   assert.equal(typeof wasm.version(), "string");
 });
 
-test("SRI digest constant matches the published @dignetwork/dig-client integrity.json", async () => {
+test("SRI digest constant matches the published @dignetwork/dig-capsule-wasm integrity.json", async () => {
   // The single source of truth for the wasm integrity is the digest the package publishes in
   // integrity.json. The SDK pins that exact value and fails closed on a mismatch.
   const { createRequire } = await import("node:module");
   const require = createRequire(import.meta.url);
-  const integrity = require("@dignetwork/dig-client/integrity.json");
+  const integrity = require("@dignetwork/dig-capsule-wasm/integrity.json");
   assert.equal(DIG_CLIENT_WASM_SHA256, integrity.sha256);
 });
 

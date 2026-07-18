@@ -13,7 +13,7 @@ const pkgVersion = JSON.parse(readFileSync(new URL("./package.json", import.meta
 //    further and never write eval in source, so the bundle is usable in CSP-strict
 //    contexts (no `unsafe-eval`). We also pin `keepNames` so the wasm-bindgen glue's
 //    function identities survive minification-free.
-//  • The read-crypto wasm comes from the published `@dignetwork/dig-client` package — kept
+//  • The read-crypto wasm comes from the published `@dignetwork/dig-capsule-wasm` package — kept
 //    external so it is resolved at runtime by src/loader.ts (Node: the sync `nodejs` build;
 //    browser: the `web` build) and SRI-verified, never inlined as a giant base64 blob.
 //  • `@dignetwork/chip35-dl-coin-wasm` is an external dependency (the canonical spend
@@ -41,9 +41,9 @@ export default defineConfig({
   // or are a peer/dep.
   external: [
     "@dignetwork/chip35-dl-coin-wasm",
-    "@dignetwork/dig-client",
-    "@dignetwork/dig-client/node",
-    "@dignetwork/dig-client/web",
+    "@dignetwork/dig-capsule-wasm",
+    "@dignetwork/dig-capsule-wasm/node",
+    "@dignetwork/dig-capsule-wasm/web",
     "@walletconnect/sign-client",
   ],
   // Inject the package version as the compile-time constant `__SDK_VERSION__` (read by

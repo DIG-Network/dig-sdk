@@ -1,6 +1,6 @@
 // `@dignetwork/dig-sdk/dig-client` — the clean, publishable read-crypto subpath (#16).
 //
-// The read-crypto wasm is consumed from the published `@dignetwork/dig-client` package (no longer
+// The read-crypto wasm is consumed from the published `@dignetwork/dig-capsule-wasm` package (no longer
 // vendored). This subpath is the stable, documented entry the ecosystem (hub, dig-embed.js) can
 // consume so they stop hand-copying the wasm. This test pins the contract: the subpath exposes the
 // loader + integrity digest + DigClient, with types, and the integrity digest is the same one the
@@ -22,8 +22,8 @@ test("dig-client subpath exposes the read-crypto surface", () => {
 
 test("dig-client subpath re-exports the canonical SRI digest (= package integrity.json)", () => {
   // The single source of truth for the wasm integrity is the digest published by
-  // @dignetwork/dig-client. The SDK pins that exact value.
-  const integrity = require("@dignetwork/dig-client/integrity.json");
+  // @dignetwork/dig-capsule-wasm. The SDK pins that exact value.
+  const integrity = require("@dignetwork/dig-capsule-wasm/integrity.json");
   assert.equal(digClient.DIG_CLIENT_WASM_SHA256, integrity.sha256);
 });
 

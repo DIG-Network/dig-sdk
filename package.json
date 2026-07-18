@@ -1,6 +1,6 @@
 {
   "name": "@dignetwork/dig-sdk",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "The typed front door for building dapps on the DIG Network: a Chia wallet abstraction (ChiaProvider) plus DigClient read-crypto (verify + decrypt content by URN) and the canonical CHIP-0035 spend builder. ESM + CJS + .d.ts, browser + Node 18+.",
   "license": "MIT",
   "author": "DIG Network",
@@ -81,7 +81,7 @@
   },
   "dependencies": {
     "@dignetwork/chip35-dl-coin-wasm": "^0.8.0",
-    "@dignetwork/dig-client": "^0.1.0"
+    "@dignetwork/dig-capsule-wasm": "^0.1.3"
   },
   "peerDependencies": {
     "@walletconnect/sign-client": "^2.11.0"

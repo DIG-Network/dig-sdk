@@ -46,7 +46,7 @@ export interface SdkCapabilities {
   readonly chains: readonly string[];
   /** The default dig RPC endpoint `DigClient` reads from. */
   readonly defaultRpc: string;
-  /** The SRI digest of the read-crypto wasm from @dignetwork/dig-client (fail-closed on mismatch). */
+  /** The SRI digest of the read-crypto wasm from @dignetwork/dig-capsule-wasm (fail-closed on mismatch). */
   readonly readCryptoWasmSha256: string;
   /** The stable error-code catalogue (UPPER_SNAKE) consumers can branch on. */
   readonly errorCodes: readonly DigSdkErrorCode[];

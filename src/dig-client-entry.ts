@@ -7,7 +7,7 @@
 // path (e.g. `dig-embed.js`, a worker) import from here instead of the whole SDK.
 //
 // WHERE THE WASM COMES FROM. The canonical read-crypto wasm (`dig_client`) is built from digstore's
-// `dig-client-wasm` crate and published as `@dignetwork/dig-client` — so nobody vendors it. This SDK
+// `dig-client-wasm` crate and published as `@dignetwork/dig-capsule-wasm` — so nobody vendors it. This SDK
 // depends on that package; `src/loader.ts` resolves the wasm from it (Node: the sync `nodejs` build;
 // browser: the `web` build) and SRI-verifies it against the pinned `DIG_CLIENT_WASM_SHA256` (the
 // same digest the package publishes in its `integrity.json`). This entry is a re-export of that
