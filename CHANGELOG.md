@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.3.3] - 2026-07-18
+
+### Chores
+- **dig-sdk:** Retarget read-crypto dep to @dignetwork/dig-capsule-wasm (#987) (#4)
+
 ## [0.3.2] - 2026-07-07
 
 ### Bug Fixes
@@ -26,7 +31,5 @@ This project adheres to [Semantic Versioning](https://semver.org) and
 
 ### Chores
 - **changelog:** Add git-cliff config for Conventional-Commit changelog
-
-## [0.1.0] - 2026-06-28
 
 
