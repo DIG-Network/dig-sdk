@@ -1,5 +1,5 @@
 // De-vendoring proof (#16 / #108): the SDK's read-crypto wasm comes from the published
-// @dignetwork/dig-client package — NOT a hand-copied vendor/ directory. These tests assert the
+// @dignetwork/dig-capsule-wasm package — NOT a hand-copied vendor/ directory. These tests assert the
 // dependency wiring so a regression (re-vendoring, or resolving a stray copy) fails CI.
 
 import test from "node:test";
@@ -14,19 +14,19 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 
-test("@dignetwork/dig-client is a declared runtime dependency", () => {
+test("@dignetwork/dig-capsule-wasm is a declared runtime dependency", () => {
   const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
   assert.ok(
-    pkg.dependencies && typeof pkg.dependencies["@dignetwork/dig-client"] === "string",
-    "expected @dignetwork/dig-client in dependencies",
+    pkg.dependencies && typeof pkg.dependencies["@dignetwork/dig-capsule-wasm"] === "string",
+    "expected @dignetwork/dig-capsule-wasm in dependencies",
   );
 });
 
-test("the read-crypto wasm resolves from node_modules/@dignetwork/dig-client (not vendor/)", () => {
-  const wasmPath = require.resolve("@dignetwork/dig-client/dig_client_bg.wasm");
+test("the read-crypto wasm resolves from node_modules/@dignetwork/dig-capsule-wasm (not vendor/)", () => {
+  const wasmPath = require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
   assert.match(
     wasmPath.replace(/\\/g, "/"),
-    /node_modules\/@dignetwork\/dig-client\//,
+    /node_modules\/@dignetwork\/dig-capsule-wasm\//,
     "wasm must be resolved from the published package",
   );
 });
@@ -43,8 +43,9 @@ test("no vendored dig-client artifacts remain in the repo", () => {
 });
 
 test("the package's shipped wasm matches its published integrity.json digest", () => {
-  const wasmPath = require.resolve("@dignetwork/dig-client/dig_client_bg.wasm");
+  const wasmPath = require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
   const sha = createHash("sha256").update(readFileSync(wasmPath)).digest("hex");
-  const integrity = require("@dignetwork/dig-client/integrity.json");
+  const integrity = require("@dignetwork/dig-capsule-wasm/integrity.json");
   assert.equal(sha, integrity.sha256);
 });
+

@@ -359,7 +359,7 @@ capabilities();    // (alias: describe()) the machine-readable surface ↓
 | `transports` | `("injected" \| "walletconnect")[]` | The wallet transports. |
 | `chains` | `string[]` | CAIP-2 chains — `["chia:mainnet"]` (no testnet flow). |
 | `defaultRpc` | `string` | The default dig RPC endpoint `DigClient` reads from. |
-| `readCryptoWasmSha256` | `string` | SRI digest of the `@dignetwork/dig-client` read-crypto wasm (fail-closed on mismatch). |
+| `readCryptoWasmSha256` | `string` | SRI digest of the `@dignetwork/dig-capsule-wasm` read-crypto wasm (fail-closed on mismatch). |
 | `errorCodes` | `string[]` | The full stable error-code catalogue (see below). |
 
 ### Error codes
@@ -424,7 +424,7 @@ and is also returned by `capabilities().errorCodes`:
 
 `DigClient` runs the **same** `dig_client` read-crypto WASM the DIG Browser, the
 `dig-chrome-extension`, the `dig-node`, and `hub.dig.net` use. The SDK consumes it from the
-published [`@dignetwork/dig-client`](https://www.npmjs.com/package/@dignetwork/dig-client) package
+published [`@dignetwork/dig-capsule-wasm`](https://www.npmjs.com/package/@dignetwork/dig-capsule-wasm) package
 (no vendoring): in Node the synchronous `nodejs` build, in the browser the `web` build. The wasm is
 pinned by SHA-256 (`DIG_CLIENT_WASM_SHA256`, the same digest the package publishes in its
 `integrity.json`) and **SRI-verified at load** — a tampered or wrong artifact **fails closed**

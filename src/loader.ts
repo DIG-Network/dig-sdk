@@ -1,6 +1,6 @@
 // Cross-target loader for the `dig_client` read-crypto WASM.
 //
-// The wasm is consumed from the published `@dignetwork/dig-client` package (the installable form of
+// The wasm is consumed from the published `@dignetwork/dig-capsule-wasm` package (the installable form of
 // digstore's dig-client-wasm crate) — the SAME artifact the DIG Browser, extension, node, and hub
 // run. We NEVER run it unverified: we obtain the package's raw wasm bytes, SHA-256 them, compare
 // against the pinned digest, and only then let the module's crypto run. A mismatch (tampered / wrong
@@ -8,11 +8,11 @@
 //
 // Two targets are consumed from the one package, auto-detected, with an escape hatch
 // (`configureWasm`):
-//   • Node / Bun          — `@dignetwork/dig-client/node`, the wasm-bindgen `nodejs` build. It reads
+//   • Node / Bun          — `@dignetwork/dig-capsule-wasm/node`, the wasm-bindgen `nodejs` build. It reads
 //                            + instantiates the wasm synchronously on import; we independently
 //                            SHA-256-verify the shipped `dig_client_bg.wasm` and fail closed on a
 //                            mismatch.
-//   • Browser (bundler)   — `@dignetwork/dig-client/web`, the `--target web` build. We fetch the
+//   • Browser (bundler)   — `@dignetwork/dig-capsule-wasm/web`, the `--target web` build. We fetch the
 //                            package's `dig_client_bg.wasm`, SRI-verify the bytes, and hand them to
 //                            the module's async init.
 //   • Browser (no bundler) — `configureWasm` with a URL/bytes you serve yourself.
@@ -23,12 +23,12 @@ import type { DigClientWasm } from "./wasm.js";
 import { DigSdkError } from "./errors.js";
 
 /**
- * SHA-256 (lowercase hex) of `@dignetwork/dig-client`'s `dig_client_bg.wasm` — the SRI digest. It
+ * SHA-256 (lowercase hex) of `@dignetwork/dig-capsule-wasm`'s `dig_client_bg.wasm` — the SRI digest. It
  * is the canonical trust anchor (pinned regardless of the npm semver), mirrored by the package's
  * `integrity.json` `sha256`. Fail closed on a mismatch.
  */
 export const DIG_CLIENT_WASM_SHA256 =
-  "8c983561eabca34778abf698ca7c2fba36117f87282ca649079599ef7d1b1156";
+  "a186fd2d6b348a7caa3112c51b666a6618fe7cf8bb56ad395a1fab4323f6ae7e";
 
 /** Optional explicit wasm inputs, for environments where package resolution can't reach the wasm. */
 export interface WasmConfig {
@@ -39,7 +39,7 @@ export interface WasmConfig {
   wasmBytes?: BufferSource;
   /**
    * URL to the wasm-bindgen `web` glue module for browser dynamic import. When omitted in a browser,
-   * the loader imports `@dignetwork/dig-client/web` (the bundler resolves it).
+   * the loader imports `@dignetwork/dig-capsule-wasm/web` (the bundler resolves it).
    */
   glueUrl?: string;
   /**
@@ -112,16 +112,16 @@ async function loadNode(): Promise<DigClientWasm> {
   const { createRequire } = await import("node:module");
   const { readFile } = await import("node:fs/promises");
   const require = createRequire(import.meta.url);
-  const wasmPath = require.resolve("@dignetwork/dig-client/dig_client_bg.wasm");
+  const wasmPath = require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
   const buf = await readFile(wasmPath);
   const bytes = new Uint8Array(buf.byteLength);
   bytes.set(buf);
   assertIntegrity(await sha256Hex(bytes));
-  const mod = (await import("@dignetwork/dig-client/node")) as unknown as DigClientModule;
+  const mod = (await import("@dignetwork/dig-capsule-wasm/node")) as unknown as DigClientModule;
   return mod as unknown as DigClientWasm;
 }
 
-// Browser: consume the `--target web` build (`@dignetwork/dig-client/web`).
+// Browser: consume the `--target web` build (`@dignetwork/dig-capsule-wasm/web`).
 //
 // Two modes:
 //   • Caller-supplied bytes/URL (`configureWasm`) — the fail-closed path for CSP-strict apps or an
@@ -130,10 +130,10 @@ async function loadNode(): Promise<DigClientWasm> {
 //   • Default — call the glue's `init()` with no args. The `--target web` build resolves its
 //     sibling `dig_client_bg.wasm` relative to its OWN module URL (the bundler-correct way to
 //     locate a package asset) and instantiates it. Those bytes are the pinned package artifact
-//     (the SDK depends on an exact `@dignetwork/dig-client` version). Apps that need byte-level SRI
+//     (the SDK depends on an exact `@dignetwork/dig-capsule-wasm` version). Apps that need byte-level SRI
 //     over an untrusted delivery path use `configureWasm({ wasmUrl })` above.
 async function loadBrowser(): Promise<DigClientWasm> {
-  const glueHref = _config.glueUrl ?? "@dignetwork/dig-client/web";
+  const glueHref = _config.glueUrl ?? "@dignetwork/dig-capsule-wasm/web";
   const mod = (await import(/* @vite-ignore */ glueHref)) as unknown as DigClientModule;
   if (typeof mod.default !== "function") {
     throw new DigSdkError(
@@ -177,3 +177,4 @@ export function loadDigClientWasm(): Promise<DigClientWasm> {
   });
   return _ready;
 }
+
