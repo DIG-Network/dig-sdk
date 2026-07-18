@@ -239,8 +239,8 @@ URN grammar the hub, extension, and companion use.
 
 `import * as spend from "@dignetwork/dig-sdk/spend"` re-exports
 [`@dignetwork/chip35-dl-coin-wasm`](https://www.npmjs.com/package/@dignetwork/chip35-dl-coin-wasm)
-(≥ 0.7.0): store coins (`mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`,
-`oracleSpend`), assets (`mintNft`, `bulkMint`, `createDid`, `issueCat`), CHIP-0007 metadata
+(≥ 0.13.0): store coins (`mintStore`, `meltStore`, `updateStoreMetadata`, `updateStoreOwnership`,
+`oracleSpend`), assets (`mintNft`, `bulkMint`, `bulkMintFunded`, `createDid`, `issueCat`), CHIP-0007 metadata
 (`buildChip0007Metadata`, `validateChip0007`, `generateItemMetadata`), offers (`encodeOffer`,
 `decodeOffer`), monetization (`buildPayment`, `buildCatPayment`, `paymentNonce`,
 `verifyPaymentReceipt`, `proveNftOwnership`, `proveCollectionMembership` — these back the

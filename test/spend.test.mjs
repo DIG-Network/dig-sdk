@@ -69,6 +69,11 @@ const NEW_0_7_0_EXPORTS = [
 // letting a consumer/agent feature-gate on exactly which spend-builder build is loaded at runtime.
 const NEW_0_8_0_EXPORTS = ["version", "capabilities"];
 
+// The funded multi-item bulk-mint builder introduced in chip35-dl-coin-wasm 0.13.0 (#221):
+// bulkMintFunded mints N items paid from an EXPLICIT funding coin. The dep bump `^0.8.0` -> `^0.13.0`
+// is what makes it reachable via the "./spend" re-export (#305).
+const NEW_0_13_0_EXPORTS = ["bulkMintFunded"];
+
 // Core CHIP-0035 store-coin builders that must remain available across the bump.
 const CORE_STORE_EXPORTS = [
   "mintStore",
@@ -83,11 +88,11 @@ const CORE_STORE_EXPORTS = [
   "init",
 ];
 
-test("SDK depends on chip35-dl-coin-wasm >= 0.8.0", () => {
+test("SDK depends on chip35-dl-coin-wasm >= 0.13.0", () => {
   const [maj, min] = chip35Pkg.version.split(".").map(Number);
   assert.ok(
-    maj > 0 || (maj === 0 && min >= 8),
-    `resolved chip35-dl-coin-wasm is ${chip35Pkg.version}, expected >= 0.8.0`,
+    maj > 0 || (maj === 0 && min >= 13),
+    `resolved chip35-dl-coin-wasm is ${chip35Pkg.version}, expected >= 0.13.0`,
   );
 });
 
@@ -114,6 +119,15 @@ test("/spend re-exports the chip35 0.8.0 introspection surface (version/capabili
     assert.ok(
       chip35Exports.has(name),
       `@dignetwork/dig-sdk/spend must re-export ${name}() (requires chip35-dl-coin-wasm >= 0.8.0)`,
+    );
+  }
+});
+
+test("/spend re-exports the chip35 0.13.0 funded bulk-mint builder (bulkMintFunded, #305)", () => {
+  for (const name of NEW_0_13_0_EXPORTS) {
+    assert.ok(
+      chip35Exports.has(name),
+      `@dignetwork/dig-sdk/spend must re-export ${name} (requires chip35-dl-coin-wasm >= 0.13.0)`,
     );
   }
 });
