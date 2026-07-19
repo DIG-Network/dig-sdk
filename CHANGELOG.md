@@ -6,8 +6,8 @@ This project adheres to [Semantic Versioning](https://semver.org) and
 
 ## [0.4.1] - 2026-07-19
 
-### Tests
-- **coverage:** Wire c8 coverage collection with a CI-gated ≥80% floor (lines/functions/branches/statements) and add unit tests for the WalletConnect request/retry loop, the ChiaProvider surface + CHIP-0002 response normalizers, and the Vite/Next framework adapters (#1156)
+### Testing
+- **dig-sdk:** Add c8 coverage gate (≥80%) + WalletConnect/provider transport tests (§2.3) (#6)
 
 ## [0.4.0] - 2026-07-18
 
