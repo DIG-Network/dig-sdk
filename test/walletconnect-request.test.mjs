@@ -35,9 +35,12 @@ function mockClient({ methods = [], request }) {
   };
 }
 
-/** Construct a transport around a mock client (private ctor is compile-time only). */
-function transportWith(client, timeoutMs = 60_000) {
-  return new WalletConnectTransport(client, { topic: TOPIC }, CHAIN, timeoutMs);
+// Construct a transport around a mock client (private ctor is compile-time only). The retry back-off
+// is driven to 0ms so the transient-retry tests exercise the real `setTimeout` sleep path without
+// waiting on wall-clock time — no mock timers needed (they require Node 20.4+, and the SDK targets
+// Node 18+).
+function transportWith(client, timeoutMs = 60_000, backoffBaseMs = 0) {
+  return new WalletConnectTransport(client, { topic: TOPIC }, CHAIN, timeoutMs, backoffBaseMs);
 }
 
 test("request resolves with the wallet's response on the happy path", async () => {
@@ -69,22 +72,17 @@ test("supports() treats an empty granted-method list as unknown-but-allowed", ()
   assert.equal(t.supports(SIGN_METHOD), true);
 });
 
-test("request times out with WALLET_TIMEOUT when the wallet never answers", async (ctx) => {
-  ctx.mock.timers.enable({ apis: ["setTimeout"] });
-  // A request that never settles — the timeout must win the race.
-  const t = transportWith(mockClient({ methods: [], request: () => new Promise(() => {}) }), 5_000);
+test("request times out with WALLET_TIMEOUT when the wallet never answers", async () => {
+  // A request that never settles — a tiny REAL timeout must win the race.
+  const t = transportWith(mockClient({ methods: [], request: () => new Promise(() => {}) }), 10);
 
-  const pending = t.request(SIGN_METHOD, {});
-  const assertion = assert.rejects(() => pending, (e) => {
+  await assert.rejects(() => t.request(SIGN_METHOD, {}), (e) => {
     assert.equal(e.code, "WALLET_TIMEOUT");
     return true;
   });
-  ctx.mock.timers.tick(5_000);
-  await assertion;
 });
 
-test("request retries ONLY a transient relay-publish failure, then succeeds", async (ctx) => {
-  ctx.mock.timers.enable({ apis: ["setTimeout"] });
+test("request retries ONLY a transient relay-publish failure, then succeeds", async () => {
   let attempt = 0;
   const request = mock.fn(async () => {
     attempt += 1;
@@ -93,28 +91,21 @@ test("request retries ONLY a transient relay-publish failure, then succeeds", as
   });
   const t = transportWith(mockClient({ methods: [], request }));
 
-  const pending = t.request(SIGN_METHOD, {});
-  await drainTimers(ctx);
-  assert.equal(await pending, "signed");
+  assert.equal(await t.request(SIGN_METHOD, {}), "signed");
   assert.equal(request.mock.callCount(), 2, "retried the transient publish failure exactly once");
 });
 
-test("request exhausts 3 attempts on repeated transient failures, then throws", async (ctx) => {
-  ctx.mock.timers.enable({ apis: ["setTimeout"] });
+test("request exhausts 3 attempts on repeated transient failures, then throws", async () => {
   const request = mock.fn(async () => {
     throw new Error("WebSocket connection failed");
   });
   const t = transportWith(mockClient({ methods: [], request }));
 
-  const pending = t.request(SIGN_METHOD, {});
-  const assertion = assert.rejects(() => pending, /WebSocket connection failed/);
-  await drainTimers(ctx);
-  await assertion;
+  await assert.rejects(() => t.request(SIGN_METHOD, {}), /WebSocket connection failed/);
   assert.equal(request.mock.callCount(), 3, "MAX_ATTEMPTS = 3");
 });
 
-test("request never re-issues a user rejection — no double prompt", async (ctx) => {
-  ctx.mock.timers.enable({ apis: ["setTimeout"] });
+test("request never re-issues a user rejection — no double prompt", async () => {
   const request = mock.fn(async () => {
     throw new Error("User rejected the request");
   });
@@ -136,13 +127,3 @@ test("disconnect is best-effort and swallows client errors", async () => {
   });
   await assert.doesNotReject(() => transportWith(failing).disconnect());
 });
-
-// Flush microtasks and advance the mocked clock repeatedly so the retry loop progresses through its
-// inter-attempt back-off sleeps without waiting on real wall-clock time.
-async function drainTimers(ctx) {
-  for (let i = 0; i < 12; i++) {
-    await Promise.resolve();
-    ctx.mock.timers.tick(5_000);
-  }
-  await Promise.resolve();
-}
