@@ -69,17 +69,23 @@ export class WalletConnectTransport implements WalletTransport {
   readonly topic: string;
   private readonly client: WcSignClient;
   private readonly requestTimeoutMs: number;
+  // Base inter-attempt back-off (ms); attempt N waits `backoffBaseMs * N`. Defaulted to the
+  // production value and only overridden by tests (to ~0) to keep the retry suite fast — a private,
+  // defaulted test seam that never changes real behaviour.
+  private readonly backoffBaseMs: number;
 
   private constructor(
     client: WcSignClient,
     session: WcSession,
     chain: string,
     requestTimeoutMs: number,
+    backoffBaseMs = 1200,
   ) {
     this.client = client;
     this.topic = session.topic;
     this.chain = chain;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.backoffBaseMs = backoffBaseMs;
   }
 
   /**
@@ -168,7 +174,7 @@ export class WalletConnectTransport implements WalletTransport {
         // Only retry transient relay-publish failures (request never reached Sage). Timeouts and
         // wallet/user rejections fall through and throw immediately.
         if (i < MAX_ATTEMPTS - 1 && isTransientPublishError(e)) {
-          await sleep(1200 * (i + 1));
+          await sleep(this.backoffBaseMs * (i + 1));
           continue;
         }
         throw e;

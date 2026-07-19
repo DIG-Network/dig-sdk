@@ -1,6 +1,6 @@
 {
   "name": "@dignetwork/dig-sdk",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The typed front door for building dapps on the DIG Network: a Chia wallet abstraction (ChiaProvider) plus DigClient read-crypto (verify + decrypt content by URN) and the canonical CHIP-0035 spend builder. ESM + CJS + .d.ts, browser + Node 18+.",
   "license": "MIT",
   "author": "DIG Network",
@@ -75,6 +75,8 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "coverage": "c8 node --test",
+    "test:coverage": "c8 node --test",
     "test:examples": "tsc -p tsconfig.examples.json --noEmit",
     "verify": "npm run typecheck && npm run build && npm test",
     "prepublishOnly": "npm run build"
