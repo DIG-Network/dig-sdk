@@ -34,5 +34,5 @@ jobs:
         run: npm run build
       - name: typecheck README examples against built types
         run: npm run test:examples
-      - name: unit + integration tests (node --test)
-        run: npm test
+      - name: unit + integration tests with coverage (node --test under c8, ≥80% gate)
+        run: npm run coverage

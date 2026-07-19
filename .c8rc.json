@@ -1,0 +1,22 @@
+{
+  "//": "Coverage config for the `node --test` suite. Tests run against the built ESM bundle; c8 remaps V8 coverage back onto the TypeScript sources in src/ via the tsup source maps. The excludes are non-logic files (pure re-export barrels + type-only declarations) that carry no branches to cover per CLAUDE.md §2.3.",
+  "src": ["src"],
+  "all": true,
+  "reporter": ["text", "lcov"],
+  "exclude": [
+    "**/*.d.ts",
+    "test/**",
+    "src/index.ts",
+    "src/spend.ts",
+    "src/adapters.ts",
+    "src/dig-client-entry.ts",
+    "src/types.ts",
+    "src/wasm.ts",
+    "src/provider/transport.ts"
+  ],
+  "check-coverage": true,
+  "lines": 80,
+  "functions": 80,
+  "branches": 80,
+  "statements": 80
+}
