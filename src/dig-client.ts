@@ -18,6 +18,7 @@
 import { loadDigClientWasm } from "./loader.js";
 import type { DigClientWasm } from "./wasm.js";
 import { parseUrn } from "./urn.js";
+import { b64ToBytes } from "./hex.js";
 import type {
   CollectionItemsPage,
   CollectionMeta,
@@ -50,19 +51,6 @@ interface GetContentResult {
   ciphertext?: string;
   inclusion_proof?: string;
   chunk_lens?: number[];
-}
-
-/** Decode a standard-base64 string (the RPC ciphertext encoding) to bytes — no DOM dependency. */
-function b64ToBytes(b64: string): Uint8Array {
-  // atob exists in browsers and modern Node; fall back to Buffer in older Node.
-  if (typeof atob === "function") {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return new Uint8Array((globalThis as any).Buffer.from(b64, "base64"));
 }
 
 /**

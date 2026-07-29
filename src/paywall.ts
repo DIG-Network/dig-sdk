@@ -18,6 +18,7 @@
 
 import type { ChiaProvider } from "./provider/chia-provider.js";
 import { DigSdkError } from "./errors.js";
+import { strip0x, hexToBytes, bytesToHex } from "./hex.js";
 
 /** A payment asset: XCH, or a CAT identified by its tail hash (e.g. $DIG). */
 export type PaymentAssetSpec =
@@ -141,32 +142,6 @@ export interface ProveAccessArgs {
   nft?: string;
   /** Gate on membership of this collection/creator DID (hex). Mutually exclusive with `nft`. */
   collection?: string;
-}
-
-/** Strip a leading `0x`/`0X` and lowercase a hex string. */
-function strip0x(hex: string): string {
-  return hex.replace(/^0x/i, "").toLowerCase();
-}
-
-/** Hex (with or without `0x`) → bytes. Throws on odd-length / non-hex input. */
-function hexToBytes(hex: string): Uint8Array {
-  const h = strip0x(hex);
-  if (h.length % 2 !== 0 || /[^0-9a-f]/.test(h)) {
-    throw new DigSdkError("INVALID_ARGUMENT", `invalid hex string: ${hex}`, {
-      value: hex,
-    });
-  }
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++)
-    out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
-/** Bytes → lowercase hex (no `0x`). */
-function bytesToHex(bytes: Uint8Array): string {
-  let s = "";
-  for (const b of bytes) s += b.toString(16).padStart(2, "0");
-  return s;
 }
 
 /**

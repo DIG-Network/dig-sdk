@@ -27,6 +27,7 @@
 
 import type { DigClientWasm } from "./wasm.js";
 import { DigSdkError } from "./errors.js";
+import { bytesToHex } from "./hex.js";
 
 /**
  * SHA-256 (lowercase hex) of `@dignetwork/dig-capsule-wasm`'s `dig_client_bg.wasm` — the SRI digest. It
@@ -89,9 +90,7 @@ async function sha256Hex(bytes: BufferSource): Promise<string> {
     return createHash("sha256").update(view).digest("hex");
   }
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return bytesToHex(new Uint8Array(digest));
 }
 
 function assertIntegrity(hex: string): void {
