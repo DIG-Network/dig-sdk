@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.4.3] - 2026-07-29
+
+### Chores
+- **dig-sdk:** Docs/DRY polish — SPEC read-crypto, hex.ts, README test, runbook (#1807)
+
 ## [0.4.2] - 2026-07-29
 
 ### Bug Fixes
