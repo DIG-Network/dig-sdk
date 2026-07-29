@@ -2,9 +2,14 @@
 //
 // The wasm is consumed from the published `@dignetwork/dig-capsule-wasm` package (the installable form of
 // digstore's dig-client-wasm crate) — the SAME artifact the DIG Browser, extension, node, and hub
-// run. We NEVER run it unverified: we obtain the package's raw wasm bytes, SHA-256 them, compare
-// against the pinned digest, and only then let the module's crypto run. A mismatch (tampered / wrong
-// artifact) throws — the reader FAILS CLOSED rather than running unverified crypto.
+// run. Integrity has two anchors depending on the delivery path:
+//   • Byte-level SRI (fail-closed) — the Node path and any caller-supplied `wasmBytes`/`wasmUrl`
+//     path SHA-256 the raw wasm bytes, compare against the pinned digest, and only then let the
+//     module's crypto run. A mismatch (tampered / wrong artifact) throws — FAILS CLOSED.
+//   • Pinned-package trust — the default browser (bundler) path lets the `--target web` glue
+//     resolve + instantiate its own sibling wasm; those bytes are the exact-version package
+//     artifact the SDK depends on, so the package supply chain is the trust anchor there. Apps on
+//     an untrusted delivery path opt into byte-level SRI with `configureWasm({ wasmUrl })`.
 //
 // Two targets are consumed from the one package, auto-detected, with an escape hatch
 // (`configureWasm`):
@@ -12,10 +17,11 @@
 //                            + instantiates the wasm synchronously on import; we independently
 //                            SHA-256-verify the shipped `dig_client_bg.wasm` and fail closed on a
 //                            mismatch.
-//   • Browser (bundler)   — `@dignetwork/dig-capsule-wasm/web`, the `--target web` build. We fetch the
-//                            package's `dig_client_bg.wasm`, SRI-verify the bytes, and hand them to
-//                            the module's async init.
-//   • Browser (no bundler) — `configureWasm` with a URL/bytes you serve yourself.
+//   • Browser (bundler)   — `@dignetwork/dig-capsule-wasm/web`, the `--target web` build. By default the
+//                            glue resolves + instantiates its own sibling `dig_client_bg.wasm` (the
+//                            pinned package artifact); pass `configureWasm({ wasmUrl })` for
+//                            fetch-then-byte-level-SRI over an untrusted delivery path.
+//   • Browser (no bundler) — `configureWasm` with a URL/bytes you serve yourself (byte-level SRI).
 //
 // Memoized: the wasm initializes at most once per process/page.
 
@@ -83,7 +89,9 @@ async function sha256Hex(bytes: BufferSource): Promise<string> {
     return createHash("sha256").update(view).digest("hex");
   }
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function assertIntegrity(hex: string): void {
@@ -112,12 +120,14 @@ async function loadNode(): Promise<DigClientWasm> {
   const { createRequire } = await import("node:module");
   const { readFile } = await import("node:fs/promises");
   const require = createRequire(import.meta.url);
-  const wasmPath = require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
+  const wasmPath =
+    require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
   const buf = await readFile(wasmPath);
   const bytes = new Uint8Array(buf.byteLength);
   bytes.set(buf);
   assertIntegrity(await sha256Hex(bytes));
-  const mod = (await import("@dignetwork/dig-capsule-wasm/node")) as unknown as DigClientModule;
+  const mod =
+    (await import("@dignetwork/dig-capsule-wasm/node")) as unknown as DigClientModule;
   return mod as unknown as DigClientWasm;
 }
 
@@ -134,7 +144,9 @@ async function loadNode(): Promise<DigClientWasm> {
 //     over an untrusted delivery path use `configureWasm({ wasmUrl })` above.
 async function loadBrowser(): Promise<DigClientWasm> {
   const glueHref = _config.glueUrl ?? "@dignetwork/dig-capsule-wasm/web";
-  const mod = (await import(/* @vite-ignore */ glueHref)) as unknown as DigClientModule;
+  const mod = (await import(
+    /* @vite-ignore */ glueHref
+  )) as unknown as DigClientModule;
   if (typeof mod.default !== "function") {
     throw new DigSdkError(
       "WASM_LOAD_FAILED",
@@ -150,10 +162,14 @@ async function loadBrowser(): Promise<DigClientWasm> {
       const wasmUrl = _config.wasmUrl!;
       const res = await fetch(wasmUrl);
       if (!res.ok)
-        throw new DigSdkError("WASM_LOAD_FAILED", `dig-client wasm fetch failed (${res.status})`, {
-          httpStatus: res.status,
-          wasmUrl,
-        });
+        throw new DigSdkError(
+          "WASM_LOAD_FAILED",
+          `dig-client wasm fetch failed (${res.status})`,
+          {
+            httpStatus: res.status,
+            wasmUrl,
+          },
+        );
       bytes = await res.arrayBuffer();
     }
     assertIntegrity(await sha256Hex(bytes));
@@ -166,8 +182,10 @@ async function loadBrowser(): Promise<DigClientWasm> {
 }
 
 /**
- * Load, SRI-verify, and instantiate the read-crypto wasm, returning its functions. Memoized — at
- * most one init per process/page. Fails closed on an integrity mismatch.
+ * Load and instantiate the read-crypto wasm, returning its functions. Memoized — at most one init
+ * per process/page. Integrity depends on the path (see the module header): the Node path and the
+ * `configureWasm({ wasmBytes | wasmUrl })` path SHA-256-verify the bytes and fail closed on a
+ * mismatch; the default browser (bundler) path trusts the pinned exact-version package artifact.
  */
 export function loadDigClientWasm(): Promise<DigClientWasm> {
   if (_ready) return _ready;
@@ -177,4 +195,3 @@ export function loadDigClientWasm(): Promise<DigClientWasm> {
   });
   return _ready;
 }
-

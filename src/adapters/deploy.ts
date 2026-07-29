@@ -38,11 +38,13 @@ export function buildDeployArgs(
   const argv: string[] = ["deploy", "--json"];
   if (cfg.storeId) argv.push("--store-id", cfg.storeId);
   if (cfg.outputDir) argv.push("--output-dir", cfg.outputDir);
-  if (!opts.skipBuild && cfg.buildCommand) argv.push("--build-command", cfg.buildCommand);
+  if (!opts.skipBuild && cfg.buildCommand)
+    argv.push("--build-command", cfg.buildCommand);
   if (cfg.message) argv.push("--message", cfg.message);
   if (cfg.network) argv.push("--network", cfg.network);
   if (cfg.remote) argv.push("--remote", cfg.remote);
-  if (cfg.waitTimeout != null) argv.push("--wait-timeout", String(cfg.waitTimeout));
+  if (cfg.waitTimeout != null)
+    argv.push("--wait-timeout", String(cfg.waitTimeout));
   return argv;
 }
 
@@ -50,7 +52,9 @@ export function buildDeployArgs(
  * The env overlay to merge onto the child process env: the SECRETS, passed out-of-band so they are
  * never visible on the command line. Returns only the keys that have a value.
  */
-export function buildDeployEnv(cfg: ResolvedDeployConfig): Record<string, string> {
+export function buildDeployEnv(
+  cfg: ResolvedDeployConfig,
+): Record<string, string> {
   const env: Record<string, string> = {};
   if (cfg.deployKey) env.DIGSTORE_DEPLOY_KEY = cfg.deployKey;
   if (cfg.salt) env.DIGSTORE_STORE_SALT = cfg.salt;

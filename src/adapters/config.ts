@@ -53,7 +53,10 @@ export interface ResolveInput {
 }
 
 /** A non-empty, trimmed env value, or undefined. Empty/whitespace env vars count as unset. */
-function envVal(env: Record<string, string | undefined>, key: string): string | undefined {
+function envVal(
+  env: Record<string, string | undefined>,
+  key: string,
+): string | undefined {
   const v = env[key];
   if (v == null) return undefined;
   const t = v.trim();
@@ -79,16 +82,29 @@ export function resolveDeployConfig(input: ResolveInput): ResolvedDeployConfig {
     digToml.storeId,
   );
   const outputDir =
-    pick(options.outputDir, envVal(env, "DIGSTORE_OUTPUT_DIR"), digToml.outputDir) ?? "dist";
+    pick(
+      options.outputDir,
+      envVal(env, "DIGSTORE_OUTPUT_DIR"),
+      digToml.outputDir,
+    ) ?? "dist";
   const buildCommand = pick(
     options.buildCommand,
     envVal(env, "DIGSTORE_BUILD_COMMAND"),
     digToml.buildCommand,
   );
-  const message = pick(options.message, envVal(env, "DIGSTORE_MESSAGE"), digToml.message);
+  const message = pick(
+    options.message,
+    envVal(env, "DIGSTORE_MESSAGE"),
+    digToml.message,
+  );
   const network =
-    pick(options.network, envVal(env, "DIGSTORE_NETWORK"), digToml.network) ?? "mainnet";
-  const remote = pick(options.remote, envVal(env, "DIGSTORE_REMOTE"), digToml.remote);
+    pick(options.network, envVal(env, "DIGSTORE_NETWORK"), digToml.network) ??
+    "mainnet";
+  const remote = pick(
+    options.remote,
+    envVal(env, "DIGSTORE_REMOTE"),
+    digToml.remote,
+  );
 
   const waitFromEnv = envVal(env, "DIGSTORE_WAIT_TIMEOUT");
   const waitTimeout = pick(

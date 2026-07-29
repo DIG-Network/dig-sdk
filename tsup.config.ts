@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 
 // The published version, read from package.json and injected as a compile-time constant so
 // `SDK_VERSION` / `capabilities().version` can never drift from what's on npm (see src/capabilities.ts).
-const pkgVersion = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
-  .version as string;
+const pkgVersion = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+).version as string;
 
 // Build the SDK to ESM + CJS + .d.ts for both browser and Node 18+.
 //

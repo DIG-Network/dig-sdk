@@ -66,8 +66,10 @@ function b64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * The read-crypto client. Construct once and reuse — the wasm is loaded + SRI-verified lazily on
- * the first read and memoized process/page-wide.
+ * The read-crypto client. Construct once and reuse — the wasm is loaded lazily on the first read
+ * and memoized process/page-wide. Its integrity anchor depends on the load path (see loader.ts):
+ * byte-level SRI on Node and on the `configureWasm({ wasmBytes | wasmUrl })` path; the pinned
+ * exact-version package artifact on the default browser (bundler) path.
  *
  * @example
  * const dig = new DigClient();
@@ -88,7 +90,7 @@ export class DigClient {
       (typeof fetch === "function" ? fetch.bind(globalThis) : undefinedFetch());
   }
 
-  /** Load (and SRI-verify) the read-crypto wasm. Exposed for callers that want the raw functions. */
+  /** Load the read-crypto wasm (integrity per the loader path). Exposed for callers wanting the raw functions. */
   async wasm(): Promise<DigClientWasm> {
     return loadDigClientWasm();
   }
@@ -104,7 +106,11 @@ export class DigClient {
     resourceKey: string,
     salt?: string | null,
   ): Promise<string> {
-    return (await this.wasm()).deriveKey(storeId, resourceKey, salt ?? undefined);
+    return (await this.wasm()).deriveKey(
+      storeId,
+      resourceKey,
+      salt ?? undefined,
+    );
   }
 
   /** Verify served `ciphertext` is included under `root` via the base64 merkle `proof`. */
@@ -125,7 +131,10 @@ export class DigClient {
    * Derive, client-side, the two root-independent keys a URN maps to (retrieval + decryption).
    * Nothing is sent to the network — pure local derivation via the wasm.
    */
-  async deriveUrnKeys(input: { urn: string; salt?: string | null }): Promise<UrnKeys> {
+  async deriveUrnKeys(input: {
+    urn: string;
+    salt?: string | null;
+  }): Promise<UrnKeys> {
     const parsed = parseUrn(input.urn);
     const wasm = await this.wasm();
     const effSalt = input.salt ?? parsed.salt ?? undefined;
@@ -135,7 +144,11 @@ export class DigClient {
       resourceKey: parsed.resourceKey,
       salt: effSalt ?? null,
       retrievalKey: wasm.retrievalKey(parsed.storeId, parsed.resourceKey),
-      decryptionKey: wasm.deriveKey(parsed.storeId, parsed.resourceKey, effSalt),
+      decryptionKey: wasm.deriveKey(
+        parsed.storeId,
+        parsed.resourceKey,
+        effSalt,
+      ),
     };
   }
 
@@ -160,7 +173,12 @@ export class DigClient {
       );
     }
     return this.readResource(
-      { storeId: parsed.storeId, resourceKey: parsed.resourceKey, root: effRoot, salt: effSalt },
+      {
+        storeId: parsed.storeId,
+        resourceKey: parsed.resourceKey,
+        root: effRoot,
+        salt: effSalt,
+      },
       opts,
     );
   }
@@ -186,7 +204,12 @@ export class DigClient {
    * download primitive the URN read is built on.
    */
   async readResource(
-    input: { storeId: string; resourceKey: string; root: string; salt?: string | null },
+    input: {
+      storeId: string;
+      resourceKey: string;
+      root: string;
+      salt?: string | null;
+    },
     opts: ReadOptions = {},
   ): Promise<ReadResult> {
     const rpc = opts.rpc ?? this.rpc;
@@ -204,7 +227,11 @@ export class DigClient {
     } catch {
       verified = false;
     }
-    const keyHex = wasm.deriveKey(input.storeId, input.resourceKey, input.salt ?? undefined);
+    const keyHex = wasm.deriveKey(
+      input.storeId,
+      input.resourceKey,
+      input.salt ?? undefined,
+    );
     try {
       const bytes = decryptResourceChunks(wasm, keyHex, ciphertext, chunkLens);
       return {
@@ -252,7 +279,11 @@ export class DigClient {
     const rpc = opts.rpc ?? this.rpc;
     const params: Record<string, unknown> = { launcher_ids: input.launcherIds };
     if (input.did) params.did = input.did;
-    const r = await this.rpcCall<CollectionMeta>(rpc, "dig.getCollection", params);
+    const r = await this.rpcCall<CollectionMeta>(
+      rpc,
+      "dig.getCollection",
+      params,
+    );
     if (!r)
       throw new DigSdkError(
         "RPC_MALFORMED_RESPONSE",
@@ -284,7 +315,11 @@ export class DigClient {
     const params: Record<string, unknown> = { launcher_ids: input.launcherIds };
     if (input.offset !== undefined) params.offset = input.offset;
     if (input.limit !== undefined) params.limit = input.limit;
-    const r = await this.rpcCall<CollectionItemsPage>(rpc, "dig.listCollectionItems", params);
+    const r = await this.rpcCall<CollectionItemsPage>(
+      rpc,
+      "dig.listCollectionItems",
+      params,
+    );
     if (!r)
       throw new DigSdkError(
         "RPC_MALFORMED_RESPONSE",
@@ -301,7 +336,11 @@ export class DigClient {
     rk: string,
     root: string,
     rpc: string,
-  ): Promise<{ ciphertext: Uint8Array; proof: string; chunkLens: number[] | null }> {
+  ): Promise<{
+    ciphertext: Uint8Array;
+    proof: string;
+    chunkLens: number[] | null;
+  }> {
     let offset = 0;
     let total: number | null = null;
     let buf: Uint8Array | null = null;
@@ -330,7 +369,10 @@ export class DigClient {
       }
       const chunk = b64ToBytes(r.ciphertext ?? "");
       const at = r.offset >>> 0;
-      buf!.set(chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))), at);
+      buf!.set(
+        chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))),
+        at,
+      );
       if (r.inclusion_proof) proof = r.inclusion_proof;
       if (r.complete || r.next_offset == null) break;
       offset = r.next_offset >>> 0;
@@ -340,7 +382,11 @@ export class DigClient {
 
   // One JSON-RPC 2.0 call. Throws a coded DigSdkError on transport failure (RPC_TRANSPORT) or a
   // JSON-RPC/HTTP error (RPC_ERROR, carrying rpcMethod/httpStatus/rpcCode context); returns `result`.
-  private async rpcCall<T>(rpc: string, method: string, params: unknown): Promise<T | null> {
+  private async rpcCall<T>(
+    rpc: string,
+    method: string,
+    params: unknown,
+  ): Promise<T | null> {
     let res: Response;
     try {
       res = await this.fetchImpl(rpc, {
@@ -357,10 +403,14 @@ export class DigClient {
       );
     }
     if (!res.ok)
-      throw new DigSdkError("RPC_ERROR", `dig RPC ${method} failed (${res.status})`, {
-        rpcMethod: method,
-        httpStatus: res.status,
-      });
+      throw new DigSdkError(
+        "RPC_ERROR",
+        `dig RPC ${method} failed (${res.status})`,
+        {
+          rpcMethod: method,
+          httpStatus: res.status,
+        },
+      );
     const json = (await res.json()) as {
       result?: T;
       error?: { message?: string; code?: number };
@@ -390,7 +440,11 @@ function decryptResourceChunks(
     throw new DigSdkError(
       "RPC_MALFORMED_RESPONSE",
       "served ciphertext length does not match chunk lengths",
-      { rpcMethod: "dig.getContent", expected: String(total), actual: String(ciphertext.length) },
+      {
+        rpcMethod: "dig.getContent",
+        expected: String(total),
+        actual: String(ciphertext.length),
+      },
     );
   }
   if (lens.length === 1) return wasm.decryptChunk(keyHex, ciphertext);

@@ -59,7 +59,8 @@ export function digVite(options: DigVitePluginOptions = {}): VitePluginLike {
         if (!injectDev) return html;
         const tag = `\n<script>${shim}</script>\n`;
         // Inject as early as possible so window.chia exists before app code runs.
-        if (html.includes("<head>")) return html.replace("<head>", `<head>${tag}`);
+        if (html.includes("<head>"))
+          return html.replace("<head>", `<head>${tag}`);
         return tag + html;
       },
     },

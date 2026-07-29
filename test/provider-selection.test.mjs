@@ -68,7 +68,10 @@ test("connect(injected) without a wallet throws", async () => {
   const prev = globalThis.chia;
   delete globalThis.chia;
   try {
-    await assert.rejects(() => ChiaProvider.connect({ mode: "injected" }), /No injected DIG wallet/);
+    await assert.rejects(
+      () => ChiaProvider.connect({ mode: "injected" }),
+      /No injected DIG wallet/,
+    );
   } finally {
     if (prev !== undefined) globalThis.chia = prev;
   }
@@ -178,11 +181,15 @@ test("signMessage normalizes by-address response (0x-prefixed pubkey)", async ()
 
 test("signCoinSpends returns the aggregated signature, tolerant of casing", async () => {
   const fake = fakeInjected({
-    responses: { chip0002_signCoinSpends: { aggregated_signature: "cc".repeat(96) } },
+    responses: {
+      chip0002_signCoinSpends: { aggregated_signature: "cc".repeat(96) },
+    },
   });
   await withInjected(fake, async () => {
     const provider = await ChiaProvider.connect({ mode: "auto" });
-    const sig = await provider.signCoinSpends([{ coin: {}, puzzle_reveal: "00", solution: "00" }]);
+    const sig = await provider.signCoinSpends([
+      { coin: {}, puzzle_reveal: "00", solution: "00" },
+    ]);
     assert.equal(sig, "cc".repeat(96));
     const call = fake.calls.find((c) => c.method === "chip0002_signCoinSpends");
     assert.equal(call.params.partialSign, true); // the proven partialSign path

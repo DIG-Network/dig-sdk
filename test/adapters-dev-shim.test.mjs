@@ -37,7 +37,10 @@ test("devShimScript: does not clobber a real injected provider", () => {
 test("devShimScript: accepts a configured mock address and echoes it", () => {
   const addr = "xch1devmockaddress";
   const s = devShimScript({ address: addr });
-  assert.ok(s.includes(addr), "the configured dev address must appear in the shim");
+  assert.ok(
+    s.includes(addr),
+    "the configured dev address must appear in the shim",
+  );
 });
 
 test("devShimScript: is a self-contained IIFE script body (injectable as-is)", () => {

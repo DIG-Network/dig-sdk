@@ -38,9 +38,12 @@ const KEY_MAP: Record<string, keyof DigTomlConfig> = {
   "wait-timeout": "waitTimeout",
 };
 
-// Apply snake_case first then kebab-case so the canonical kebab form overrides the alias.
-const APPLY_ORDER = Object.keys(KEY_MAP).sort((a) =>
-  a.includes("-") ? 1 : -1,
+// Apply snake_case first then kebab-case so the canonical kebab form overrides the alias. This is
+// a stable partition: a two-argument comparator that ranks snake keys (0) before kebab keys (1).
+// (A single-argument comparator is inconsistent — it ignores `b` — and yields engine-dependent
+// ordering, so the kebab-wins precedence would only hold by luck; see #1156.)
+const APPLY_ORDER = Object.keys(KEY_MAP).sort(
+  (a, b) => (a.includes("-") ? 1 : 0) - (b.includes("-") ? 1 : 0),
 );
 
 /** Strip a `# comment` that is not inside a quoted value. */

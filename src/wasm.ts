@@ -1,13 +1,19 @@
 // The read-crypto WASM surface (the `dig_client` module built from digstore's dig-client-wasm
 // crate). These signatures mirror the published `@dignetwork/dig-capsule-wasm` `dig_client.d.ts`. The SDK
-// loads this wasm lazily from that package and SRI-verifies it before use (see loader.ts).
+// loads this wasm lazily from that package; wasm integrity depends on the load path — byte-level
+// SRI (fail-closed) on the Node + explicit configureWasm({ wasmBytes | wasmUrl }) paths, pinned-
+// package trust on the default browser (bundler) path (see loader.ts).
 
 /** The read-crypto functions the SDK uses from the dig_client WASM. */
 export interface DigClientWasm {
   /** `retrieval_key = SHA-256(canonical rootless urn)`, lowercase hex. Empty key ⇒ index.html. */
   retrievalKey(storeIdHex: string, resourceKey: string): string;
   /** Derive the 32-byte AES-256 content key (lowercase hex). `saltHex` for a private store. */
-  deriveKey(storeIdHex: string, resourceKey: string, saltHex?: string | null): string;
+  deriveKey(
+    storeIdHex: string,
+    resourceKey: string,
+    saltHex?: string | null,
+  ): string;
   /**
    * Verify `ciphertext` is included under `trustedRootHex` via the base64 merkle `proofB64`.
    * Returns true on success, false on ANY verification failure (a decoy returns false rather than

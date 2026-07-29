@@ -18,21 +18,21 @@ normative contracts land in this file as they are substantially touched.
 A `WalletTransport` is the low-level channel `ChiaProvider` issues CHIP-0002 RPCs through. Exactly
 two backends exist:
 
-| `backend` | Description |
-|---|---|
-| `"injected"` | The DIG Browser's in-process wallet (or a compatible CHIP-0002 extension) exposed as `window.chia`. No relay, no pairing, no QR. |
-| `"walletconnect"` | WalletConnect v2 → Sage, over the WalletConnect relay. Requires `@walletconnect/sign-client` (optional peer dependency). |
+| `backend`         | Description                                                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `"injected"`      | The DIG Browser's in-process wallet (or a compatible CHIP-0002 extension) exposed as `window.chia`. No relay, no pairing, no QR. |
+| `"walletconnect"` | WalletConnect v2 → Sage, over the WalletConnect relay. Requires `@walletconnect/sign-client` (optional peer dependency).         |
 
 Every `WalletTransport` implementation MUST expose:
 
-| Member | Contract |
-|---|---|
-| `backend` | The `WalletBackend` this transport is (`"injected"` \| `"walletconnect"`), fixed at construction. |
-| `chain` | The CAIP-2 chain id this transport is bound to. |
-| `topic` | A session identifier: the real WalletConnect relay topic, or the fixed sentinel `"injected"` for the injected backend. |
-| `supports(method): boolean` | True iff the active session grants `method`. An empty/unknown grant set MUST be treated as "granted" (fail open on capability, fail closed on the actual RPC). |
-| `request(method, params): Promise<unknown>` | Issue one CHIP-0002 RPC. MUST reject with a `DigSdkError` (never a bare `Error`) when the method is unsupported or the transport fails. |
-| `disconnect(): Promise<void>` | Best-effort teardown. MUST NOT throw for an already-torn-down session. |
+| Member                                      | Contract                                                                                                                                                       |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend`                                   | The `WalletBackend` this transport is (`"injected"` \| `"walletconnect"`), fixed at construction.                                                              |
+| `chain`                                     | The CAIP-2 chain id this transport is bound to.                                                                                                                |
+| `topic`                                     | A session identifier: the real WalletConnect relay topic, or the fixed sentinel `"injected"` for the injected backend.                                         |
+| `supports(method): boolean`                 | True iff the active session grants `method`. An empty/unknown grant set MUST be treated as "granted" (fail open on capability, fail closed on the actual RPC). |
+| `request(method, params): Promise<unknown>` | Issue one CHIP-0002 RPC. MUST reject with a `DigSdkError` (never a bare `Error`) when the method is unsupported or the transport fails.                        |
+| `disconnect(): Promise<void>`               | Best-effort teardown. MUST NOT throw for an already-torn-down session.                                                                                         |
 
 ### 1.1 Injected transport (`InjectedTransport`)
 
@@ -75,12 +75,12 @@ Every `WalletTransport` implementation MUST expose:
 
 ### 2.1 `ConnectOptions.mode` — connector selection
 
-| `mode` value | Resolution | Backward compatibility |
-|---|---|---|
-| `"auto"` (default when `mode` is omitted) | Try the injected transport first; if unavailable, fall back to WalletConnect. Never asks the caller. | The pre-#63 default; unchanged. |
-| `"injected"` | Require the injected transport. Reject `NO_INJECTED_WALLET` if unavailable. | Pre-#63 value; unchanged. |
-| `"browser-wallet"` | **Alias of `"injected"`** — identical resolution and identical `NO_INJECTED_WALLET` failure. Exists as the chooser-facing connector id (see §3). | Added by #63; purely additive. |
-| `"walletconnect"` | Require the WalletConnect transport. Reject `WC_OPTIONS_REQUIRED` if `walletConnect` options are absent. | Unchanged. |
+| `mode` value                              | Resolution                                                                                                                                       | Backward compatibility          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| `"auto"` (default when `mode` is omitted) | Try the injected transport first; if unavailable, fall back to WalletConnect. Never asks the caller.                                             | The pre-#63 default; unchanged. |
+| `"injected"`                              | Require the injected transport. Reject `NO_INJECTED_WALLET` if unavailable.                                                                      | Pre-#63 value; unchanged.       |
+| `"browser-wallet"`                        | **Alias of `"injected"`** — identical resolution and identical `NO_INJECTED_WALLET` failure. Exists as the chooser-facing connector id (see §3). | Added by #63; purely additive.  |
+| `"walletconnect"`                         | Require the WalletConnect transport. Reject `WC_OPTIONS_REQUIRED` if `walletConnect` options are absent.                                         | Unchanged.                      |
 
 `connect()` MUST normalize `"browser-wallet"` to the same code path as `"injected"` before
 dispatch; the two values MUST NEVER diverge in behavior. Whichever value the caller passed MUST be
@@ -148,13 +148,13 @@ Every failure on this surface is a `DigSdkError` (never a bare `Error`) with a s
 `.code` plus structured `.context`. The catalogue is exhaustively listed in `README.md` §"Error
 codes" and mirrored by `capabilities().errorCodes`; the codes this surface can throw are:
 
-| Code | Thrown when | Context |
-|---|---|---|
-| `NO_INJECTED_WALLET` | `mode: "injected"` or `mode: "browser-wallet"` found no usable `window.chia`. | `mode` (the caller's raw value), `acceptAnyInjected` |
-| `WC_OPTIONS_REQUIRED` | WalletConnect was needed (`mode: "walletconnect"`, or the WC leg of `"auto"`) but no `walletConnect` options were supplied. | `mode` (the caller's raw value) |
-| `WC_DEPENDENCY_MISSING` | The optional `@walletconnect/sign-client` peer dependency is not installed/usable. | — |
-| `METHOD_NOT_SUPPORTED` | The active transport/session does not grant the requested CHIP-0002 method. | `method` |
-| `WALLET_TIMEOUT` | A WalletConnect RPC exceeded `requestTimeoutMs` without a response. | `method`, `timeoutMs` |
+| Code                    | Thrown when                                                                                                                 | Context                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `NO_INJECTED_WALLET`    | `mode: "injected"` or `mode: "browser-wallet"` found no usable `window.chia`.                                               | `mode` (the caller's raw value), `acceptAnyInjected` |
+| `WC_OPTIONS_REQUIRED`   | WalletConnect was needed (`mode: "walletconnect"`, or the WC leg of `"auto"`) but no `walletConnect` options were supplied. | `mode` (the caller's raw value)                      |
+| `WC_DEPENDENCY_MISSING` | The optional `@walletconnect/sign-client` peer dependency is not installed/usable.                                          | —                                                    |
+| `METHOD_NOT_SUPPORTED`  | The active transport/session does not grant the requested CHIP-0002 method.                                                 | `method`                                             |
+| `WALLET_TIMEOUT`        | A WalletConnect RPC exceeded `requestTimeoutMs` without a response.                                                         | `method`, `timeoutMs`                                |
 
 `isDigSdkError(e, code?)` is the required narrowing check (brand-based, not `instanceof`) since the
 SDK ships several independently-bundled entry points that each inline their own `DigSdkError`

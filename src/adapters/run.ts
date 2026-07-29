@@ -47,7 +47,9 @@ async function readDigToml(cwd: string): Promise<DigTomlConfig> {
  * SECRETS injected through the child env (never the argv). Rejects with digstore's stderr on
  * non-zero exit. Returns the parsed {@link DeployResult}.
  */
-export async function runDeploy(options: RunDeployOptions = {}): Promise<DeployResult> {
+export async function runDeploy(
+  options: RunDeployOptions = {},
+): Promise<DeployResult> {
   const cwd = options.cwd ?? process.cwd();
   const bin = options.digstoreBin ?? "digstore";
   const log = options.logger ?? ((l: string) => console.log(l));
@@ -70,7 +72,9 @@ export async function runDeploy(options: RunDeployOptions = {}): Promise<DeployR
   const argv = buildDeployArgs(cfg, { skipBuild: options.skipBuild });
   const childEnv = { ...process.env, ...buildDeployEnv(cfg) };
 
-  log(`▶ digstore ${argv.filter((a) => a !== cfg.deployKey && a !== cfg.salt).join(" ")}`);
+  log(
+    `▶ digstore ${argv.filter((a) => a !== cfg.deployKey && a !== cfg.salt).join(" ")}`,
+  );
 
   const { spawn } = await import("node:child_process");
   const stdout = await new Promise<string>((resolve, reject) => {
@@ -103,10 +107,14 @@ export async function runDeploy(options: RunDeployOptions = {}): Promise<DeployR
       if (code === 0) resolve(out);
       else
         reject(
-          new DigSdkError("DEPLOY_FAILED", `digstore deploy failed (exit ${code}).\n${err || out}`, {
-            exitCode: code,
-            stderr: err.slice(0, 2000),
-          }),
+          new DigSdkError(
+            "DEPLOY_FAILED",
+            `digstore deploy failed (exit ${code}).\n${err || out}`,
+            {
+              exitCode: code,
+              stderr: err.slice(0, 2000),
+            },
+          ),
         );
     });
   });

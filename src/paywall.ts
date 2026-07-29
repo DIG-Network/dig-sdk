@@ -21,8 +21,7 @@ import { DigSdkError } from "./errors.js";
 
 /** A payment asset: XCH, or a CAT identified by its tail hash (e.g. $DIG). */
 export type PaymentAssetSpec =
-  | { xch: true; assetId?: undefined }
-  | { xch?: false; assetId: string };
+  { xch: true; assetId?: undefined } | { xch?: false; assetId: string };
 
 /**
  * The subset of `@dignetwork/chip35-dl-coin-wasm` the Paywall drives. The full wasm module satisfies
@@ -153,10 +152,13 @@ function strip0x(hex: string): string {
 function hexToBytes(hex: string): Uint8Array {
   const h = strip0x(hex);
   if (h.length % 2 !== 0 || /[^0-9a-f]/.test(h)) {
-    throw new DigSdkError("INVALID_ARGUMENT", `invalid hex string: ${hex}`, { value: hex });
+    throw new DigSdkError("INVALID_ARGUMENT", `invalid hex string: ${hex}`, {
+      value: hex,
+    });
   }
   const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
@@ -225,7 +227,8 @@ export class Paywall {
    */
   private spends(): Promise<MonetizationSpends> {
     if (this.injectedSpends) {
-      if (typeof this.injectedSpends.init === "function") this.injectedSpends.init();
+      if (typeof this.injectedSpends.init === "function")
+        this.injectedSpends.init();
       return Promise.resolve(this.injectedSpends);
     }
     if (!this.spendsReady) {
@@ -256,7 +259,10 @@ export class Paywall {
   }
 
   /** Resolve the 32-byte unlock nonce: explicit hex, else derived from `memo`, else random. */
-  private async resolveNonce(spends: MonetizationSpends, args: RequestPaymentArgs): Promise<Uint8Array> {
+  private async resolveNonce(
+    spends: MonetizationSpends,
+    args: RequestPaymentArgs,
+  ): Promise<Uint8Array> {
     if (args.nonce) return hexToBytes(args.nonce);
     if (args.memo) {
       if (typeof spends.paymentNonce !== "function") {
@@ -293,7 +299,10 @@ export class Paywall {
           { builder: "buildCatPayment" },
         );
       }
-      const cats = await this.provider.getCatCoins(strip0x(args.assetId), args.coinLimit);
+      const cats = await this.provider.getCatCoins(
+        strip0x(args.assetId),
+        args.coinLimit,
+      );
       built = spends.buildCatPayment(buyerKey, cats, ownerPh, amount, nonce);
     } else {
       if (typeof spends.buildPayment !== "function") {
@@ -305,7 +314,14 @@ export class Paywall {
         );
       }
       const coins = await this.provider.getXchCoins(args.coinLimit);
-      built = spends.buildPayment(buyerKey, coins, ownerPh, amount, nonce, BigInt(args.fee ?? 0));
+      built = spends.buildPayment(
+        buyerKey,
+        coins,
+        ownerPh,
+        amount,
+        nonce,
+        BigInt(args.fee ?? 0),
+      );
     }
 
     // Push the EXACT coin spends the wasm produced to the wallet for signing — unchanged.
@@ -322,7 +338,9 @@ export class Paywall {
    * Verify an observed on-chain payment unlocks the paywall (pay-to-unlock). Delegates to the wasm
    * `verifyPaymentReceipt`; returns its `{ ok, error? }` verdict. `ok:true` grants access.
    */
-  async verifyReceipt(args: VerifyReceiptArgs): Promise<{ ok: boolean; error?: string }> {
+  async verifyReceipt(
+    args: VerifyReceiptArgs,
+  ): Promise<{ ok: boolean; error?: string }> {
     const spends = await this.spends();
     if (typeof spends.verifyPaymentReceipt !== "function") {
       throw new DigSdkError(
@@ -352,7 +370,9 @@ export class Paywall {
    * `proveCollectionMembership`. Returns `{ ok, proof?, error? }`. The caller still confirms the
    * proof's coin is unspent on-chain for liveness.
    */
-  async proveAccess(args: ProveAccessArgs): Promise<{ ok: boolean; proof?: unknown; error?: string }> {
+  async proveAccess(
+    args: ProveAccessArgs,
+  ): Promise<{ ok: boolean; proof?: unknown; error?: string }> {
     if (args.nft && args.collection) {
       throw new DigSdkError(
         "INVALID_ARGUMENT",
@@ -370,7 +390,11 @@ export class Paywall {
           { builder: "proveCollectionMembership" },
         );
       }
-      return spends.proveCollectionMembership(args.parentSpend, owner, hexToBytes(args.collection));
+      return spends.proveCollectionMembership(
+        args.parentSpend,
+        owner,
+        hexToBytes(args.collection),
+      );
     }
     if (typeof spends.proveNftOwnership !== "function") {
       throw new DigSdkError(

@@ -40,13 +40,19 @@ test("isDigSdkError narrows by code", () => {
 
 test("DIG_SDK_ERROR_CODES codes are UPPER_SNAKE and self-keyed", () => {
   const codes = Object.entries(DIG_SDK_ERROR_CODES);
-  assert.ok(codes.length >= 15, "the catalogue should cover every failure class");
+  assert.ok(
+    codes.length >= 15,
+    "the catalogue should cover every failure class",
+  );
   for (const [k, v] of codes) {
     assert.equal(k, v, `code value must equal its key (${k})`);
     assert.match(v, /^[A-Z][A-Z0-9_]*$/, `${v} must be UPPER_SNAKE`);
   }
   // The catalogue advertised via capabilities() matches the const exactly.
-  assert.deepEqual([...capabilities().errorCodes].sort(), Object.values(DIG_SDK_ERROR_CODES).sort());
+  assert.deepEqual(
+    [...capabilities().errorCodes].sort(),
+    Object.values(DIG_SDK_ERROR_CODES).sort(),
+  );
 });
 
 // ---- DigClient: read-crypto / RPC coded errors ----
@@ -66,17 +72,33 @@ test("DigClient RPC transport failure throws RPC_TRANSPORT with rpcMethod contex
     },
   });
   await assert.rejects(
-    () => dig.read({ urn: `urn:dig:chia:${"ab".repeat(32)}/index.html`, root: "cd".repeat(32) }),
-    (e) => isDigSdkError(e, "RPC_TRANSPORT") && e.context.rpcMethod === "dig.getContent",
+    () =>
+      dig.read({
+        urn: `urn:dig:chia:${"ab".repeat(32)}/index.html`,
+        root: "cd".repeat(32),
+      }),
+    (e) =>
+      isDigSdkError(e, "RPC_TRANSPORT") &&
+      e.context.rpcMethod === "dig.getContent",
   );
 });
 
 test("DigClient RPC HTTP error throws RPC_ERROR with httpStatus", async () => {
   const dig = new DigClient({
-    fetch: async () => ({ ok: false, status: 503, async json() { return {}; } }),
+    fetch: async () => ({
+      ok: false,
+      status: 503,
+      async json() {
+        return {};
+      },
+    }),
   });
   await assert.rejects(
-    () => dig.read({ urn: `urn:dig:chia:${"ab".repeat(32)}/index.html`, root: "cd".repeat(32) }),
+    () =>
+      dig.read({
+        urn: `urn:dig:chia:${"ab".repeat(32)}/index.html`,
+        root: "cd".repeat(32),
+      }),
     (e) => isDigSdkError(e, "RPC_ERROR") && e.context.httpStatus === 503,
   );
 });
@@ -86,12 +108,20 @@ test("DigClient JSON-RPC error throws RPC_ERROR carrying the server message", as
     fetch: async () => ({
       ok: true,
       async json() {
-        return { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "boom" } };
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          error: { code: -32000, message: "boom" },
+        };
       },
     }),
   });
   await assert.rejects(
-    () => dig.read({ urn: `urn:dig:chia:${"ab".repeat(32)}/index.html`, root: "cd".repeat(32) }),
+    () =>
+      dig.read({
+        urn: `urn:dig:chia:${"ab".repeat(32)}/index.html`,
+        root: "cd".repeat(32),
+      }),
     (e) => isDigSdkError(e, "RPC_ERROR") && e.context.rpcCode === -32000,
   );
 });
@@ -142,7 +172,10 @@ test("Paywall.requestPayment without a builder throws SPEND_BUILDER_UNAVAILABLE"
 });
 
 test("Paywall.proveAccess with both nft and collection throws INVALID_ARGUMENT", async () => {
-  const paywall = new Paywall({ backend: "injected" }, { spends: { init() {} } });
+  const paywall = new Paywall(
+    { backend: "injected" },
+    { spends: { init() {} } },
+  );
   await assert.rejects(
     () =>
       paywall.proveAccess({

@@ -22,7 +22,11 @@ test("resolveDeployConfig: defaults when nothing supplied", () => {
 test("resolveDeployConfig: dig.toml supplies values", () => {
   const c = resolveDeployConfig({
     options: {},
-    digToml: { storeId: STORE, outputDir: "build", buildCommand: "npm run build" },
+    digToml: {
+      storeId: STORE,
+      outputDir: "build",
+      buildCommand: "npm run build",
+    },
     env: {},
   });
   assert.equal(c.storeId, STORE);
@@ -44,7 +48,10 @@ test("resolveDeployConfig: secrets come from env, never from options/dig.toml", 
   const c = resolveDeployConfig({
     options: {},
     digToml: {},
-    env: { DIGSTORE_DEPLOY_KEY: "ff".repeat(32), DIGSTORE_STORE_SALT: "11".repeat(32) },
+    env: {
+      DIGSTORE_DEPLOY_KEY: "ff".repeat(32),
+      DIGSTORE_STORE_SALT: "11".repeat(32),
+    },
   });
   assert.equal(c.deployKey, "ff".repeat(32));
   assert.equal(c.salt, "11".repeat(32));

@@ -15,20 +15,28 @@ test("digVite returns a serve-only plugin that injects the dev shim into <head>"
   assert.equal(plugin.name, "dignetwork:vite-plugin-dig");
   assert.equal(plugin.apply, "serve");
 
-  const out = plugin.transformIndexHtml.handler("<html><head></head><body></body></html>");
+  const out = plugin.transformIndexHtml.handler(
+    "<html><head></head><body></body></html>",
+  );
   assert.ok(out.includes(DEV_SHIM_MARKER), "shim marker injected");
   assert.ok(out.includes("<head>\n<script>"), "shim placed right after <head>");
 });
 
 test("digVite prepends the shim when the document has no <head>", () => {
   const out = digVite().transformIndexHtml.handler("<body>hi</body>");
-  assert.ok(out.startsWith("\n<script>"), "shim prepended when no <head> to anchor on");
+  assert.ok(
+    out.startsWith("\n<script>"),
+    "shim prepended when no <head> to anchor on",
+  );
   assert.ok(out.includes(DEV_SHIM_MARKER));
 });
 
 test("digVite with devWallet:false injects nothing and passes HTML through unchanged", () => {
   const html = "<html><head></head></html>";
-  assert.equal(digVite({ devWallet: false }).transformIndexHtml.handler(html), html);
+  assert.equal(
+    digVite({ devWallet: false }).transformIndexHtml.handler(html),
+    html,
+  );
 });
 
 test("digNextDevShimScript / Tag return the shim, the tag wrapped in a <script>", () => {

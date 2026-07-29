@@ -52,7 +52,10 @@ test("buildDeployArgs: NEVER puts secrets on argv", () => {
     salt: "11".repeat(32),
   });
   const joined = argv.join(" ");
-  assert.ok(!joined.includes("ff".repeat(32)), "deploy key must not be on argv");
+  assert.ok(
+    !joined.includes("ff".repeat(32)),
+    "deploy key must not be on argv",
+  );
   assert.ok(!joined.includes("11".repeat(32)), "salt must not be on argv");
   assert.ok(!argv.includes("--deploy-key"));
   assert.ok(!argv.includes("--salt"));
@@ -60,12 +63,18 @@ test("buildDeployArgs: NEVER puts secrets on argv", () => {
 
 test("buildDeployArgs: omits build-command when the adapter already built", () => {
   // When the adapter runs the framework build itself, it should NOT ask digstore to rebuild.
-  const argv = buildDeployArgs({ outputDir: "dist", buildCommand: "npm run build" }, { skipBuild: true });
+  const argv = buildDeployArgs(
+    { outputDir: "dist", buildCommand: "npm run build" },
+    { skipBuild: true },
+  );
   assert.ok(!argv.includes("--build-command"));
 });
 
 test("buildDeployEnv: carries secrets through the child env", () => {
-  const env = buildDeployEnv({ deployKey: "ff".repeat(32), salt: "11".repeat(32) });
+  const env = buildDeployEnv({
+    deployKey: "ff".repeat(32),
+    salt: "11".repeat(32),
+  });
   assert.equal(env.DIGSTORE_DEPLOY_KEY, "ff".repeat(32));
   assert.equal(env.DIGSTORE_STORE_SALT, "11".repeat(32));
 });
@@ -102,7 +111,12 @@ test("parseDeployResult: prefers the digstore-emitted content_address for chiaUr
   const capsule = `${STORE}:${ROOT}`;
   const content = `chia://${STORE}:${ROOT}/`;
   const out = parseDeployResult(
-    JSON.stringify({ root: ROOT, capsule, content_address: content, pushed: true }),
+    JSON.stringify({
+      root: ROOT,
+      capsule,
+      content_address: content,
+      pushed: true,
+    }),
   );
   assert.equal(out.chiaUrl, content);
   assert.equal(out.digUrl, content);
@@ -126,7 +140,10 @@ test("parseDeployResult: throws a clear error when no capsule is present", () =>
 });
 
 test("parseDeployResult: throws on non-JSON output", () => {
-  assert.throws(() => parseDeployResult("digstore: command not found"), /could not parse/i);
+  assert.throws(
+    () => parseDeployResult("digstore: command not found"),
+    /could not parse/i,
+  );
 });
 
 test("parseDeployResult: unparseable output throws coded DEPLOY_OUTPUT_UNPARSEABLE", () => {

@@ -46,7 +46,10 @@ export function parseUrn(raw: string): ParsedUrn {
     throw new DigSdkError(
       "INVALID_ARGUMENT",
       "Not a valid dig URN (expected urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]).",
-      { value: s, expected: "urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]" },
+      {
+        value: s,
+        expected: "urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]",
+      },
     );
   }
   return {
@@ -74,7 +77,8 @@ export function isUrn(raw: string): boolean {
  * key — matching the wasm's `reconstructUrn`.
  */
 export function reconstructUrn(storeId: string, resourceKey: string): string {
-  const key = resourceKey && resourceKey.length > 0 ? resourceKey : "index.html";
+  const key =
+    resourceKey && resourceKey.length > 0 ? resourceKey : "index.html";
   return `urn:dig:chia:${storeId.toLowerCase()}/${key}`;
 }
 
@@ -88,6 +92,7 @@ export function reconstructUrnWithRoot(
   root: string,
   resourceKey: string,
 ): string {
-  const key = resourceKey && resourceKey.length > 0 ? resourceKey : "index.html";
+  const key =
+    resourceKey && resourceKey.length > 0 ? resourceKey : "index.html";
   return `urn:dig:chia:${storeId.toLowerCase()}:${root.toLowerCase()}/${key}`;
 }
