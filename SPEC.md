@@ -9,7 +9,8 @@ surface and are stable contracts.
 
 The SDK's other pillars — `DigClient` (read-crypto), `Paywall` (monetization), the `/spend`
 CHIP-0035 re-export, and the Vite/Next framework adapters — are documented in `README.md`; their
-normative contracts land in this file as they are substantially touched.
+normative contracts land in this file as they are substantially touched. The read-crypto surface
+`DigClient` consumes is normatively specified in §7.
 
 ---
 
@@ -187,3 +188,99 @@ class identity.
 - `WALLET_METHODS` / `SIGN_METHODS` (the CHIP-0002 method surface both transports negotiate) are
   defined once in `src/methods.ts` and MUST be identical for both transports — a dapp's method call
   MUST behave the same regardless of which connector is active.
+
+---
+
+## 7. Read-crypto (`DigClient`)
+
+`DigClient` is the read side of the SDK: it derives a resource's keys CLIENT-SIDE, fetches opaque
+ciphertext + inclusion proofs from the dig RPC, verifies inclusion against a caller-supplied
+on-chain root, and decrypts — so the serving host stays BLIND. The values in this section are
+**byte-identical cross-repo contracts**: the URN grammar, the retrieval-key derivation, and the
+JSON-RPC wire shapes MUST match dig-store's `dig-resolver`/`dig-client-wasm`, the dig-node RPC, and
+the shared definitions in the ecosystem `SYSTEM.md` (→ "URN scheme", "content-read RPC"). This
+section DOCUMENTS them; an implementation MUST NOT diverge from `SYSTEM.md`.
+
+### 7.1 URN scheme
+
+A DIG resource is addressed by a URN of the exact form:
+
+```
+urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
+```
+
+- `<store_id>` and the optional `<root>` are each **exactly 64 lowercase-normalized hex chars** (a
+  32-byte SHA-256). `parseUrn` accepts mixed case and normalizes; emitters MUST lowercase.
+- `<root>` is OPTIONAL and, when present, is ONLY a trust anchor (which generation to verify
+  against) — it MUST NOT affect the retrieval or decryption keys (§7.2).
+- `<resource_key>` is the path within the store; an empty resource key resolves to the default view
+  `index.html`.
+- `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
+
+The **canonical, root-INDEPENDENT** form is `urn:dig:chia:<store_id>/<resource_key>` — the form
+whose bytes seed key derivation. `reconstructUrn(storeId, resourceKey)` produces it;
+`reconstructUrnWithRoot(...)` produces the root-pinned DISPLAY form `urn:dig:chia:<store_id>:<root>/
+<resource_key>`, which is for sharing only and MUST NOT be fed into key derivation.
+
+### 7.2 Retrieval key
+
+The retrieval key is derived purely locally (no network) as:
+
+```
+retrieval_key = SHA-256(canonical rootless URN)   // lowercase hex, 64 chars
+```
+
+i.e. the SHA-256 of `urn:dig:chia:<store_id>/<resource_key>` (empty key ⇒ `index.html`). It is
+**root-independent** — the same resource in any generation of the store maps to the same retrieval
+key — and is computed by the read-crypto wasm (`retrievalKey(storeIdHex, resourceKey)`). The AES-256
+content key is likewise derived from the canonical rootless URN (plus the salt for a private store)
+by the wasm and MUST NOT depend on the root.
+
+### 7.3 JSON-RPC wire (`dig.*`)
+
+`DigClient` calls the dig RPC over JSON-RPC 2.0 (`POST`, `{ jsonrpc:"2.0", id, method, params }`). A
+transport failure is `RPC_TRANSPORT`, an HTTP/JSON-RPC error is `RPC_ERROR`, and a structurally
+absent/inconsistent result is `RPC_MALFORMED_RESPONSE` (§4 catalogue). A read NEVER concludes "not
+found": the oblivious host returns indistinguishable ciphertext for any key, so a missing resource
+is just opaque bytes that fail to decrypt.
+
+**`dig.getContent`** — stream one resource's ciphertext by retrieval key.
+
+- Params: `{ store_id, root, retrieval_key, offset, length }` (all hex/number; `root` is the trust
+  anchor, `retrieval_key` per §7.2).
+- Result: `{ total_length, offset, next_offset, complete, ciphertext, inclusion_proof, chunk_lens }`
+  — `ciphertext` is **standard base64**; `chunk_lens` the per-chunk plaintext lengths.
+- **Chunking:** the client requests `length = 3 MiB` (`3 * 1024 * 1024` bytes) per call — the
+  backend caps each response at 3 MiB (the Lambda/API-Gateway response ceiling) — and reassembles by
+  looping until `complete` is true or `next_offset` is null, writing each chunk at its returned
+  `offset` into a `total_length` buffer. This 3-MiB cap is the shared contract with the RPC.
+
+**`dig.getCollection`** — read a collection's public, owner-independent facts.
+
+- Params: `{ launcher_ids: string[], did? }` — the item set is keyed by NFT **launcher ids** (the
+  owner-independent anchor), NOT the creator DID; `did` (optional) is echoed back as the declared
+  creator.
+- Result: a `CollectionMeta` (creator DID, resolved item count, uniform royalty basis points).
+
+**`dig.listCollectionItems`** — read a deterministic paginated page of a collection's items, each
+resolved to its CURRENT on-chain state (current owner, royalty, CHIP-0007 metadata).
+
+- Params: `{ launcher_ids: string[], offset?, limit? }` — items return in input launcher-id order;
+  `limit` is clamped to the server cap (200); `offset` defaults to 0.
+- Result: a `CollectionItemsPage` — `items` plus `next_offset` (null on the last page).
+
+### 7.4 Security properties
+
+- **Blind host / no presence oracle.** The trust ROOT is always caller-supplied (resolved from the
+  chain); the host is never the trust anchor. Because the host returns indistinguishable ciphertext
+  for any retrieval key, resource presence is UNKNOWABLE from a read.
+- **wasm integrity is per-load-path** (from #1156 finding 2 — mirrors `src/loader.ts` +
+  `src/wasm.ts`):
+  - **Byte-level SRI (fail-closed)** on the Node path and on any caller-supplied
+    `configureWasm({ wasmBytes | wasmUrl })` path: the loader SHA-256s the raw wasm bytes, compares
+    them against the pinned digest (`DIG_CLIENT_WASM_SHA256`, mirrored by the package's
+    `integrity.json`), and refuses to run on a mismatch.
+  - **Pinned-package trust** on the DEFAULT browser (bundler) path: the bundler resolves
+    `@dignetwork/dig-capsule-wasm/web` and instantiates the pinned package artifact, so the trust
+    anchor there is the package supply chain — NOT byte-level SRI. An app on an untrusted delivery
+    path opts into byte-level SRI with `configureWasm({ wasmUrl })`.

@@ -6,23 +6,12 @@
 
 import type { SignResult } from "../types.js";
 import { DigSdkError } from "../errors.js";
+import { with0x, strip0x } from "../hex.js";
 
 /** A function that issues one CHIP-0002 RPC through some transport. */
 export type RequestFn = (method: string, params: unknown) => Promise<unknown>;
 /** A predicate: does the active session grant `method`? */
 export type SupportsFn = (method: string) => boolean;
-
-/** Ensure a hex string is `0x`-prefixed (or pass through null/empty). */
-export function with0x(hex: string | null | undefined): string | null {
-  if (!hex) return hex ?? null;
-  return hex.startsWith("0x") ? hex : `0x${hex}`;
-}
-
-function strip0x(h: unknown): string {
-  return String(h ?? "")
-    .replace(/^0x/i, "")
-    .toLowerCase();
-}
 
 /** The wallet's receive address (tolerant of string / {address} / {data:{address}}). */
 export async function getAddress(request: RequestFn): Promise<string | null> {
