@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.4.2] - 2026-07-29
+
+### Bug Fixes
+- **sdk:** Dig.toml key precedence + eslint/prettier gates + scope SRI docs (#7)
+
 ## [0.4.1] - 2026-07-19
 
 ### Testing
