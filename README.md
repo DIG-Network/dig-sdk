@@ -19,7 +19,7 @@ The typed front door for building dapps on the **DIG Network**. One `npm i` give
   (a Next static-export adapter): inject a `window.chia` dev wallet during `dev`, and ship your
   build to a DIG capsule on a `publish` script. See **[Framework adapters](#framework-adapters)**.
 - **`@dignetwork/dig-sdk/dig-client`** — the read-crypto on its own (just `DigClient` + the loader +
-  URN helpers), for consumers that want only the read path (e.g. a worker). Same SRI-pinned wasm.
+  URN helpers), for consumers that want only the read path (e.g. a worker). Same digest-pinned wasm.
 
 Ships **ESM + CJS + `.d.ts`**, runs in the **browser and Node 18+**, and is **eval-free** (usable
 in CSP-strict contexts).
@@ -227,7 +227,7 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 | `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)` | Lower-level read-crypto.                                                                                                                  |
 | `getCollection({ launcherIds, did? }, opts?)`                      | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`.                                  |
 | `listCollectionItems({ launcherIds, offset?, limit? }, opts?)`     | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
-| `wasm()`                                                           | The raw SRI-verified read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …).                                                  |
+| `wasm()`                                                           | The raw read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …); integrity per the loader path.                                |
 
 ### `Paywall`
 
@@ -447,8 +447,16 @@ and is also returned by `capabilities().errorCodes`:
 published [`@dignetwork/dig-capsule-wasm`](https://www.npmjs.com/package/@dignetwork/dig-capsule-wasm) package
 (no vendoring): in Node the synchronous `nodejs` build, in the browser the `web` build. The wasm is
 pinned by SHA-256 (`DIG_CLIENT_WASM_SHA256`, the same digest the package publishes in its
-`integrity.json`) and **SRI-verified at load** — a tampered or wrong artifact **fails closed**
-rather than running unverified crypto.
+`integrity.json`). Its integrity anchor depends on the load path:
+
+- **Byte-level SRI (fail-closed)** on the **Node** path and on the explicit
+  `configureWasm({ wasmBytes | wasmUrl })` path — the raw bytes are SHA-256-verified against the
+  pinned digest and a tampered or wrong artifact **fails closed** rather than running unverified
+  crypto.
+- **Pinned-package trust** on the **default browser (bundler)** path — the `web` glue resolves and
+  instantiates its own sibling wasm, which is the exact-version package artifact the SDK depends on,
+  so the package supply chain is the trust anchor. CSP-strict / untrusted-delivery apps opt into
+  byte-level SRI via `configureWasm({ wasmUrl })` (see below).
 
 ### CSP-strict / no-bundler browsers
 

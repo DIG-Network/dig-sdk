@@ -66,8 +66,10 @@ function b64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * The read-crypto client. Construct once and reuse — the wasm is loaded + SRI-verified lazily on
- * the first read and memoized process/page-wide.
+ * The read-crypto client. Construct once and reuse — the wasm is loaded lazily on the first read
+ * and memoized process/page-wide. Its integrity anchor depends on the load path (see loader.ts):
+ * byte-level SRI on Node and on the `configureWasm({ wasmBytes | wasmUrl })` path; the pinned
+ * exact-version package artifact on the default browser (bundler) path.
  *
  * @example
  * const dig = new DigClient();
@@ -88,7 +90,7 @@ export class DigClient {
       (typeof fetch === "function" ? fetch.bind(globalThis) : undefinedFetch());
   }
 
-  /** Load (and SRI-verify) the read-crypto wasm. Exposed for callers that want the raw functions. */
+  /** Load the read-crypto wasm (integrity per the loader path). Exposed for callers wanting the raw functions. */
   async wasm(): Promise<DigClientWasm> {
     return loadDigClientWasm();
   }
