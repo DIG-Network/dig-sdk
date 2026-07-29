@@ -23,10 +23,10 @@ test("WALLET_METHODS includes the full canonical CHIP-0002 set", () => {
 });
 
 test("SIGN_METHODS preference order: by-address first, by-pubkey fallback", () => {
-  assert.deepEqual([...SIGN_METHODS], [
-    "chia_signMessageByAddress",
-    "chip0002_signMessage",
-  ]);
+  assert.deepEqual(
+    [...SIGN_METHODS],
+    ["chia_signMessageByAddress", "chip0002_signMessage"],
+  );
 });
 
 test("both sign methods are part of the negotiated set", () => {

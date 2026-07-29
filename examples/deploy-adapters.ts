@@ -21,7 +21,10 @@ import {
 } from "@dignetwork/dig-sdk/adapters";
 
 // --- Vite plugin: add to vite.config plugins, deploy from a publish script ---
-const vitePlugin = digVite({ devWallet: true, devWalletOptions: { address: "xch1dev" } });
+const vitePlugin = digVite({
+  devWallet: true,
+  devWalletOptions: { address: "xch1dev" },
+});
 void vitePlugin.name;
 
 export async function publishViteSite(): Promise<DeployResult> {

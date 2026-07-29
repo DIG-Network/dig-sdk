@@ -48,7 +48,11 @@ export function digNextDevShimTag(options: DevShimOptions = {}): string {
  * existing `out/` rather than rebuilding.
  */
 export function digDeploy(options: AdapterOptions = {}): Promise<DeployResult> {
-  return runDeploy({ ...options, outputDir: options.outputDir ?? NEXT_EXPORT_DIR, skipBuild: true });
+  return runDeploy({
+    ...options,
+    outputDir: options.outputDir ?? NEXT_EXPORT_DIR,
+    skipBuild: true,
+  });
 }
 
 export default digDeploy;

@@ -35,7 +35,9 @@ test("parseUrn: private-store salt", () => {
 });
 
 test("parseUrn: uppercase store/root are lowercased", () => {
-  const p = parseUrn(`urn:dig:chia:${STORE.toUpperCase()}:${ROOT.toUpperCase()}/x`);
+  const p = parseUrn(
+    `urn:dig:chia:${STORE.toUpperCase()}:${ROOT.toUpperCase()}/x`,
+  );
   assert.equal(p.storeId, STORE);
   assert.equal(p.root, ROOT);
 });
@@ -51,7 +53,10 @@ test("isUrn: true/false without throwing", () => {
 });
 
 test("reconstructUrn: rootless; empty key -> index.html", () => {
-  assert.equal(reconstructUrn(STORE, "a/b.txt"), `urn:dig:chia:${STORE}/a/b.txt`);
+  assert.equal(
+    reconstructUrn(STORE, "a/b.txt"),
+    `urn:dig:chia:${STORE}/a/b.txt`,
+  );
   assert.equal(reconstructUrn(STORE, ""), `urn:dig:chia:${STORE}/index.html`);
 });
 

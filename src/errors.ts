@@ -63,7 +63,8 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
 } as const);
 
 /** The union of every stable SDK error code. Branch on `err.code` against these. */
-export type DigSdkErrorCode = (typeof DIG_SDK_ERROR_CODES)[keyof typeof DIG_SDK_ERROR_CODES];
+export type DigSdkErrorCode =
+  (typeof DIG_SDK_ERROR_CODES)[keyof typeof DIG_SDK_ERROR_CODES];
 
 /** Structured, code-specific context attached to a {@link DigSdkError}. All fields optional. */
 export interface DigSdkErrorContext {
@@ -131,13 +132,20 @@ export class DigSdkError extends Error {
       (this as { cause?: unknown }).cause = options.cause;
     }
     // Brand the instance (non-enumerable) so isDigSdkError recognizes it across bundle boundaries.
-    Object.defineProperty(this, DIG_SDK_ERROR_BRAND, { value: true, enumerable: false });
+    Object.defineProperty(this, DIG_SDK_ERROR_BRAND, {
+      value: true,
+      enumerable: false,
+    });
     // Preserve a correct prototype chain when compiled to ES5-ish targets / across realms.
     Object.setPrototypeOf(this, DigSdkError.prototype);
   }
 
   /** A JSON-friendly view of the error: `{ code, message, context }`. */
-  toJSON(): { code: DigSdkErrorCode; message: string; context: DigSdkErrorContext } {
+  toJSON(): {
+    code: DigSdkErrorCode;
+    message: string;
+    context: DigSdkErrorContext;
+  } {
     return { code: this.code, message: this.message, context: this.context };
   }
 }
@@ -147,9 +155,14 @@ export class DigSdkError extends Error {
  * BRAND rather than `instanceof` so it recognizes coded errors thrown from any of the SDK's
  * separately-bundled entry points (the main entry and `/adapters` inline distinct class identities).
  */
-export function isDigSdkError(e: unknown, code?: DigSdkErrorCode): e is DigSdkError {
+export function isDigSdkError(
+  e: unknown,
+  code?: DigSdkErrorCode,
+): e is DigSdkError {
   const branded =
     e instanceof DigSdkError ||
-    (typeof e === "object" && e !== null && (e as Record<string, unknown>)[DIG_SDK_ERROR_BRAND] === true);
+    (typeof e === "object" &&
+      e !== null &&
+      (e as Record<string, unknown>)[DIG_SDK_ERROR_BRAND] === true);
   return branded && (code === undefined || (e as DigSdkError).code === code);
 }

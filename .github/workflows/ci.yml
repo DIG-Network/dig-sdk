@@ -28,6 +28,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - name: lint (eslint, zero errors)
+        run: npm run lint
+      - name: format check (prettier)
+        run: npm run format:check
       - name: typecheck (source)
         run: npm run typecheck
       - name: build (ESM + CJS + d.ts)

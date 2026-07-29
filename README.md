@@ -37,10 +37,10 @@ npm i @walletconnect/sign-client
 ```ts
 import { DigClient } from "@dignetwork/dig-sdk";
 
-const dig = new DigClient();                       // defaults to https://rpc.dig.net
+const dig = new DigClient(); // defaults to https://rpc.dig.net
 const { bytes, decrypted, verified } = await dig.read({
-  urn: "urn:dig:chia:<storeId>/index.html",        // the resource to read
-  root: "<onchain-root-hex>",                       // the trust anchor (from the chain)
+  urn: "urn:dig:chia:<storeId>/index.html", // the resource to read
+  root: "<onchain-root-hex>", // the trust anchor (from the chain)
 });
 console.log(decrypted, verified, new TextDecoder().decode(bytes));
 ```
@@ -75,7 +75,9 @@ const provider = await ChiaProvider.connect({
 });
 
 const address = await provider.getAddress();
-const { publicKey, signature } = await provider.signMessage("Login to My DIG dapp");
+const { publicKey, signature } = await provider.signMessage(
+  "Login to My DIG dapp",
+);
 // → verify the BLS signature server-side against the CHIP-0002 message hash + publicKey
 ```
 
@@ -122,7 +124,9 @@ spend.init();
 // Build a spend bundle with the wasm builder (e.g. spend.mintStore(...) / spend.updateStoreMetadata(...)),
 // then hand its coin spends to the wallet to sign:
 const provider = await ChiaProvider.connect({ mode: "injected" });
-const aggregatedSignature = await provider.signCoinSpends(/* coinSpends from the builder */ []);
+const aggregatedSignature = await provider.signCoinSpends(
+  /* coinSpends from the builder */ [],
+);
 ```
 
 The hub builds spend bundles in-browser via this wasm and pushes them to the wallet for signing —
@@ -148,7 +152,11 @@ const { receipt, signature } = await paywall.requestPayment({
 });
 
 // …or charge a CAT (e.g. $DIG) by passing its tail hash:
-await paywall.requestPayment({ amount: 100n, owner: dappOwnerPuzzleHashHex, assetId: digTailHashHex });
+await paywall.requestPayment({
+  amount: 100n,
+  owner: dappOwnerPuzzleHashHex,
+  assetId: digTailHashHex,
+});
 
 // Later, gate access by re-checking the on-chain payment against the receipt:
 const { ok } = await paywall.verifyReceipt({
@@ -159,7 +167,11 @@ const { ok } = await paywall.verifyReceipt({
 if (ok) grantAccess();
 
 // Or gate on holding an NFT (or a collection membership) instead of a payment:
-const access = await paywall.proveAccess({ parentSpend, owner, nft: nftLauncherIdHex });
+const access = await paywall.proveAccess({
+  parentSpend,
+  owner,
+  nft: nftLauncherIdHex,
+});
 // const access = await paywall.proveAccess({ parentSpend, owner, collection: creatorDidHex });
 ```
 
@@ -173,21 +185,21 @@ const access = await paywall.proveAccess({ parentSpend, owner, nft: nftLauncherI
 
 ### `ChiaProvider`
 
-| Member | Description |
-|---|---|
-| `static connect(options)` | Connect a wallet. See **`ConnectOptions`** below. |
-| `static listConnectors(options?)` | Enumerate the connectors a chooser can offer — `{ id, backend, label, available }[]` for `"browser-wallet"` and `"walletconnect"`. Pure/side-effect-free (never connects); pass `{ acceptAnyInjected: true }` to widen Browser Wallet detection to any `window.chia`. |
-| `connectWallet(options)` | Convenience alias for `ChiaProvider.connect`. |
-| `backend` / `session` | The connected transport (`"injected"` \| `"walletconnect"`) and session descriptor. |
-| `getAddress()` | The wallet's receive address (cached). |
-| `getPublicKeys()` | The wallet's synthetic public keys. |
-| `signMessage(message, address?)` | Sign a UTF-8 message; returns `{ publicKey, signature }` (0x-normalized). |
-| `signCoinSpends(coinSpends)` | Sign raw CHIP-0035 coin spends (partialSign); returns the aggregated signature hex. |
-| `takeOffer(offer, fee?)` | Accept a Chia offer string (e.g. an NFT offer). |
-| `getXchBalance()` / `getCatBalance(assetId)` | Spendable balances (mojo/base-unit strings). |
-| `getXchCoins(limit?)` / `getCatCoins(assetId, limit?)` | Unspent coins for funding a spend. |
-| `request(method, params?)` | Escape hatch: a raw CHIP-0002 request through the active transport. |
-| `supports(method)` / `disconnect()` | Capability check / teardown. |
+| Member                                                 | Description                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `static connect(options)`                              | Connect a wallet. See **`ConnectOptions`** below.                                                                                                                                                                                                                     |
+| `static listConnectors(options?)`                      | Enumerate the connectors a chooser can offer — `{ id, backend, label, available }[]` for `"browser-wallet"` and `"walletconnect"`. Pure/side-effect-free (never connects); pass `{ acceptAnyInjected: true }` to widen Browser Wallet detection to any `window.chia`. |
+| `connectWallet(options)`                               | Convenience alias for `ChiaProvider.connect`.                                                                                                                                                                                                                         |
+| `backend` / `session`                                  | The connected transport (`"injected"` \| `"walletconnect"`) and session descriptor.                                                                                                                                                                                   |
+| `getAddress()`                                         | The wallet's receive address (cached).                                                                                                                                                                                                                                |
+| `getPublicKeys()`                                      | The wallet's synthetic public keys.                                                                                                                                                                                                                                   |
+| `signMessage(message, address?)`                       | Sign a UTF-8 message; returns `{ publicKey, signature }` (0x-normalized).                                                                                                                                                                                             |
+| `signCoinSpends(coinSpends)`                           | Sign raw CHIP-0035 coin spends (partialSign); returns the aggregated signature hex.                                                                                                                                                                                   |
+| `takeOffer(offer, fee?)`                               | Accept a Chia offer string (e.g. an NFT offer).                                                                                                                                                                                                                       |
+| `getXchBalance()` / `getCatBalance(assetId)`           | Spendable balances (mojo/base-unit strings).                                                                                                                                                                                                                          |
+| `getXchCoins(limit?)` / `getCatCoins(assetId, limit?)` | Unspent coins for funding a spend.                                                                                                                                                                                                                                    |
+| `request(method, params?)`                             | Escape hatch: a raw CHIP-0002 request through the active transport.                                                                                                                                                                                                   |
+| `supports(method)` / `disconnect()`                    | Capability check / teardown.                                                                                                                                                                                                                                          |
 
 Transports are also exported directly (`InjectedTransport`, `WalletConnectTransport`,
 `isInjectedAvailable`, `getInjectedProvider`) for advanced flows (e.g. restoring a WC session via
@@ -195,36 +207,36 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 
 #### `ConnectOptions`
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `"auto"` \| `"injected"` \| `"browser-wallet"` \| `"walletconnect"` | `"auto"` | `"auto"` prefers the injected DIG wallet and falls back to WalletConnect (silent — kept for backward compatibility); `"browser-wallet"` (alias of `"injected"`) requires the injected wallet (throws `NO_INJECTED_WALLET` if absent) — pass this once the user picks it from `listConnectors()`; `"walletconnect"` forces WalletConnect→Sage (throws `WC_OPTIONS_REQUIRED` if `walletConnect` is omitted). |
-| `walletConnect` | `WalletConnectOptions` | — | Required for the WalletConnect fallback/force path (`projectId`, `metadata`, `onUri`). Omit if you only target the injected DIG Browser wallet. |
-| `chain` | `string` | `"chia:mainnet"` | CAIP-2 chain id. Mainnet only — there is no testnet flow. |
-| `acceptAnyInjected` | `boolean` | `false` | Accept any `window.chia` for the injected path, not just the DIG Browser's unspoofable `isDIG` provider. Use with care — a non-DIG provider is not feature-detected. |
+| Field               | Type                                                                | Default          | Description                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`              | `"auto"` \| `"injected"` \| `"browser-wallet"` \| `"walletconnect"` | `"auto"`         | `"auto"` prefers the injected DIG wallet and falls back to WalletConnect (silent — kept for backward compatibility); `"browser-wallet"` (alias of `"injected"`) requires the injected wallet (throws `NO_INJECTED_WALLET` if absent) — pass this once the user picks it from `listConnectors()`; `"walletconnect"` forces WalletConnect→Sage (throws `WC_OPTIONS_REQUIRED` if `walletConnect` is omitted). |
+| `walletConnect`     | `WalletConnectOptions`                                              | —                | Required for the WalletConnect fallback/force path (`projectId`, `metadata`, `onUri`). Omit if you only target the injected DIG Browser wallet.                                                                                                                                                                                                                                                            |
+| `chain`             | `string`                                                            | `"chia:mainnet"` | CAIP-2 chain id. Mainnet only — there is no testnet flow.                                                                                                                                                                                                                                                                                                                                                  |
+| `acceptAnyInjected` | `boolean`                                                           | `false`          | Accept any `window.chia` for the injected path, not just the DIG Browser's unspoofable `isDIG` provider. Use with care — a non-DIG provider is not feature-detected.                                                                                                                                                                                                                                       |
 
 ### `DigClient`
 
-| Member | Description |
-|---|---|
-| `new DigClient({ rpc?, fetch? })` | RPC defaults to `https://rpc.dig.net`. |
-| `read({ urn, root?, salt? }, opts?)` | Fetch + verify + decrypt → `{ bytes, verified, decrypted, … }`. |
-| `readText({ urn, root?, salt? }, opts?)` | As `read`, decoded to a UTF-8 string (throws if not decrypted). |
-| `readResource({ storeId, resourceKey, root, salt? }, opts?)` | Read by explicit parts instead of a URN. |
-| `deriveUrnKeys({ urn, salt? })` | The root-independent `{ retrievalKey, decryptionKey }` for a URN. |
-| `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)` | The individual derivations. |
-| `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)` | Lower-level read-crypto. |
-| `getCollection({ launcherIds, did? }, opts?)` | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`. |
-| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)` | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
-| `wasm()` | The raw SRI-verified read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …). |
+| Member                                                             | Description                                                                                                                               |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `new DigClient({ rpc?, fetch? })`                                  | RPC defaults to `https://rpc.dig.net`.                                                                                                    |
+| `read({ urn, root?, salt? }, opts?)`                               | Fetch + verify + decrypt → `{ bytes, verified, decrypted, … }`.                                                                           |
+| `readText({ urn, root?, salt? }, opts?)`                           | As `read`, decoded to a UTF-8 string (throws if not decrypted).                                                                           |
+| `readResource({ storeId, resourceKey, root, salt? }, opts?)`       | Read by explicit parts instead of a URN.                                                                                                  |
+| `deriveUrnKeys({ urn, salt? })`                                    | The root-independent `{ retrievalKey, decryptionKey }` for a URN.                                                                         |
+| `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)`    | The individual derivations.                                                                                                               |
+| `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)` | Lower-level read-crypto.                                                                                                                  |
+| `getCollection({ launcherIds, did? }, opts?)`                      | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`.                                  |
+| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)`     | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
+| `wasm()`                                                           | The raw SRI-verified read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …).                                                  |
 
 ### `Paywall`
 
-| Member | Description |
-|---|---|
-| `new Paywall(provider, { spends? })` | Wrap a connected `ChiaProvider`. `spends` defaults to a lazy `import("@dignetwork/chip35-dl-coin-wasm")` (pass it for non-bundler runtimes). |
+| Member                                                                         | Description                                                                                                                                                         |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new Paywall(provider, { spends? })`                                           | Wrap a connected `ChiaProvider`. `spends` defaults to a lazy `import("@dignetwork/chip35-dl-coin-wasm")` (pass it for non-bundler runtimes).                        |
 | `requestPayment({ amount, owner, assetId?, memo?, nonce?, fee?, coinLimit? })` | Build the payment via the wasm (`buildPayment` XCH / `buildCatPayment` CAT) and push it to the wallet to sign. Returns `{ signature, receipt, coinSpends, nonce }`. |
-| `verifyReceipt({ observed, owner, minAmount, asset?, nonce? })` | Verify an observed on-chain payment unlocks the paywall (wasm `verifyPaymentReceipt`). Returns `{ ok, error? }`. |
-| `proveAccess({ parentSpend, owner, nft? \| collection? })` | Prove NFT ownership (`proveNftOwnership`) or collection membership (`proveCollectionMembership`). Returns `{ ok, proof?, error? }`. |
+| `verifyReceipt({ observed, owner, minAmount, asset?, nonce? })`                | Verify an observed on-chain payment unlocks the paywall (wasm `verifyPaymentReceipt`). Returns `{ ok, error? }`.                                                    |
+| `proveAccess({ parentSpend, owner, nft? \| collection? })`                     | Prove NFT ownership (`proveNftOwnership`) or collection membership (`proveCollectionMembership`). Returns `{ ok, proof?, error? }`.                                 |
 
 `amount` / `minAmount` / `fee` accept a `number` or `bigint`; hashes/ids/nonces are hex (with or
 without `0x`). The Paywall holds **no** spend-assembly logic — if the canonical wasm builder is
@@ -277,8 +289,8 @@ export default defineConfig({
 // package.json — opt in to deploy with a publish script (after the build)
 {
   "scripts": {
-    "publish:dig": "vite build && node -e \"import('@dignetwork/dig-sdk/vite').then(m => m.digDeploy())\""
-  }
+    "publish:dig": "vite build && node -e \"import('@dignetwork/dig-sdk/vite').then(m => m.digDeploy())\"",
+  },
 }
 ```
 
@@ -296,12 +308,20 @@ dev), and `digDeploy()` ships the `out/` static export:
 // app/layout.tsx — dev-only window.chia shim
 import { digNextDevShimTag } from "@dignetwork/dig-sdk/next";
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html>
       <head>
         {process.env.NODE_ENV !== "production" && (
-          <script dangerouslySetInnerHTML={{ __html: digNextDevShimTag().replace(/^<script>|<\/script>$/g, "") }} />
+          <script
+            dangerouslySetInnerHTML={{
+              __html: digNextDevShimTag().replace(/^<script>|<\/script>$/g, ""),
+            }}
+          />
         )}
       </head>
       <body>{children}</body>
@@ -314,8 +334,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 // package.json — deploy the static export (next.config: `output: "export"`)
 {
   "scripts": {
-    "publish:dig": "next build && node -e \"import('@dignetwork/dig-sdk/next').then(m => m.digDeploy())\""
-  }
+    "publish:dig": "next build && node -e \"import('@dignetwork/dig-sdk/next').then(m => m.digDeploy())\"",
+  },
 }
 ```
 
@@ -343,24 +363,24 @@ full error catalogue without reading source, and every failure carries a stable 
 ```ts
 import { SDK_VERSION, capabilities } from "@dignetwork/dig-sdk";
 
-SDK_VERSION;       // "0.2.0" — the published version, injected from package.json at build time
-capabilities();    // (alias: describe()) the machine-readable surface ↓
+SDK_VERSION; // "0.2.0" — the published version, injected from package.json at build time
+capabilities(); // (alias: describe()) the machine-readable surface ↓
 ```
 
 `capabilities()` (and its alias `describe()`) returns:
 
-| Field | Type | Description |
-|---|---|---|
-| `name` | `string` | `"@dignetwork/dig-sdk"`. |
-| `version` | `string` | `SDK_VERSION`. |
-| `modules` | `{ name, summary, entry }[]` | The pillars: `ChiaProvider`, `DigClient`, `Paywall`, `spend`, `adapters` (each with its import `entry`). |
-| `walletMethods` | `string[]` | The canonical CHIP-0002 method surface both transports negotiate. |
-| `signMethods` | `string[]` | Message-signing methods, in preference order. |
-| `transports` | `("injected" \| "walletconnect")[]` | The wallet transports. |
-| `chains` | `string[]` | CAIP-2 chains — `["chia:mainnet"]` (no testnet flow). |
-| `defaultRpc` | `string` | The default dig RPC endpoint `DigClient` reads from. |
-| `readCryptoWasmSha256` | `string` | SRI digest of the `@dignetwork/dig-capsule-wasm` read-crypto wasm (fail-closed on mismatch). |
-| `errorCodes` | `string[]` | The full stable error-code catalogue (see below). |
+| Field                  | Type                                | Description                                                                                              |
+| ---------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `name`                 | `string`                            | `"@dignetwork/dig-sdk"`.                                                                                 |
+| `version`              | `string`                            | `SDK_VERSION`.                                                                                           |
+| `modules`              | `{ name, summary, entry }[]`        | The pillars: `ChiaProvider`, `DigClient`, `Paywall`, `spend`, `adapters` (each with its import `entry`). |
+| `walletMethods`        | `string[]`                          | The canonical CHIP-0002 method surface both transports negotiate.                                        |
+| `signMethods`          | `string[]`                          | Message-signing methods, in preference order.                                                            |
+| `transports`           | `("injected" \| "walletconnect")[]` | The wallet transports.                                                                                   |
+| `chains`               | `string[]`                          | CAIP-2 chains — `["chia:mainnet"]` (no testnet flow).                                                    |
+| `defaultRpc`           | `string`                            | The default dig RPC endpoint `DigClient` reads from.                                                     |
+| `readCryptoWasmSha256` | `string`                            | SRI digest of the `@dignetwork/dig-capsule-wasm` read-crypto wasm (fail-closed on mismatch).             |
+| `errorCodes`           | `string[]`                          | The full stable error-code catalogue (see below).                                                        |
 
 ### Error codes
 
@@ -384,27 +404,27 @@ try {
 The catalogue is exported as the typed `DIG_SDK_ERROR_CODES` const (and the `DigSdkErrorCode` union),
 and is also returned by `capabilities().errorCodes`:
 
-| Code | Thrown when | Key context fields |
-|---|---|---|
-| `WC_OPTIONS_REQUIRED` | WalletConnect was needed but no `walletConnect` options were given. | `mode` |
-| `NO_INJECTED_WALLET` | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`. | `mode`, `acceptAnyInjected` |
-| `WC_DEPENDENCY_MISSING` | The optional `@walletconnect/sign-client` peer dep is not installed. | — |
-| `METHOD_NOT_SUPPORTED` | The active session/transport does not grant the requested method. | `method` |
-| `WALLET_TIMEOUT` | A wallet RPC timed out (e.g. Sage did not respond). | `method`, `timeoutMs` |
-| `WALLET_NO_KEYS` | The wallet returned no public keys / no key to sign with. | — |
-| `ROOT_REQUIRED` | A content read needs a confirmed on-chain root and none was supplied. | `urn` |
-| `DECRYPT_FAILED` | The resource did not decrypt under this URN (wrong key/salt, or a decoy). | `urn` |
-| `RPC_TRANSPORT` | The dig RPC could not be reached (network/transport failure). | `rpcMethod` |
-| `RPC_ERROR` | The dig RPC returned an HTTP error or a JSON-RPC `error`. | `rpcMethod`, `httpStatus`, `rpcCode` |
-| `RPC_MALFORMED_RESPONSE` | The dig RPC returned a malformed/inconsistent payload. | `rpcMethod` |
-| `WASM_INTEGRITY` | The read-crypto wasm failed its SRI check — fail closed. | `expected`, `actual` |
-| `WASM_LOAD_FAILED` | The read-crypto wasm could not be loaded. | `httpStatus`, `wasmUrl` |
-| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled). | `builder` |
-| `NO_SECURE_RANDOM` | No secure random source to generate a payment nonce. | — |
-| `DIGSTORE_NOT_FOUND` | The `digstore` binary could not be spawned (not installed / not on PATH). | `bin` |
-| `DEPLOY_FAILED` | `digstore deploy` exited non-zero. | `exitCode`, `stderr` |
-| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule. | `stdout` |
-| `INVALID_ARGUMENT` | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule). | `value`, `expected` |
+| Code                        | Thrown when                                                                             | Key context fields                   |
+| --------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------ |
+| `WC_OPTIONS_REQUIRED`       | WalletConnect was needed but no `walletConnect` options were given.                     | `mode`                               |
+| `NO_INJECTED_WALLET`        | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`.        | `mode`, `acceptAnyInjected`          |
+| `WC_DEPENDENCY_MISSING`     | The optional `@walletconnect/sign-client` peer dep is not installed.                    | —                                    |
+| `METHOD_NOT_SUPPORTED`      | The active session/transport does not grant the requested method.                       | `method`                             |
+| `WALLET_TIMEOUT`            | A wallet RPC timed out (e.g. Sage did not respond).                                     | `method`, `timeoutMs`                |
+| `WALLET_NO_KEYS`            | The wallet returned no public keys / no key to sign with.                               | —                                    |
+| `ROOT_REQUIRED`             | A content read needs a confirmed on-chain root and none was supplied.                   | `urn`                                |
+| `DECRYPT_FAILED`            | The resource did not decrypt under this URN (wrong key/salt, or a decoy).               | `urn`                                |
+| `RPC_TRANSPORT`             | The dig RPC could not be reached (network/transport failure).                           | `rpcMethod`                          |
+| `RPC_ERROR`                 | The dig RPC returned an HTTP error or a JSON-RPC `error`.                               | `rpcMethod`, `httpStatus`, `rpcCode` |
+| `RPC_MALFORMED_RESPONSE`    | The dig RPC returned a malformed/inconsistent payload.                                  | `rpcMethod`                          |
+| `WASM_INTEGRITY`            | The read-crypto wasm failed its SRI check — fail closed.                                | `expected`, `actual`                 |
+| `WASM_LOAD_FAILED`          | The read-crypto wasm could not be loaded.                                               | `httpStatus`, `wasmUrl`              |
+| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled). | `builder`                            |
+| `NO_SECURE_RANDOM`          | No secure random source to generate a payment nonce.                                    | —                                    |
+| `DIGSTORE_NOT_FOUND`        | The `digstore` binary could not be spawned (not installed / not on PATH).               | `bin`                                |
+| `DEPLOY_FAILED`             | `digstore deploy` exited non-zero.                                                      | `exitCode`, `stderr`                 |
+| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule.                     | `stdout`                             |
+| `INVALID_ARGUMENT`          | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule). | `value`, `expected`                  |
 
 ---
 
@@ -416,7 +436,7 @@ and is also returned by `capabilities().errorCodes`:
 - **Oblivious / blind host** — the dig RPC returns indistinguishable ciphertext for any retrieval
   key, so presence is unknowable. The client decrypts what it can; it never asks the host "is this
   present?".
-- **Trust anchor** — content is verified against an **on-chain root** that *you* resolve from the
+- **Trust anchor** — content is verified against an **on-chain root** that _you_ resolve from the
   chain (coinset.org / the store singleton) and pass to `read({ root })`. The serving host can
   never be the trust anchor.
 
@@ -438,7 +458,10 @@ verify the bytes yourself and hand them in **before** the first read:
 
 ```ts
 import { configureWasm } from "@dignetwork/dig-sdk";
-configureWasm({ wasmBytes: myVerifiedBytes, glueUrl: "/dig-client/dig_client.js" });
+configureWasm({
+  wasmBytes: myVerifiedBytes,
+  glueUrl: "/dig-client/dig_client.js",
+});
 ```
 
 ## License

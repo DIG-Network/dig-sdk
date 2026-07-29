@@ -40,7 +40,13 @@ function mockClient({ methods = [], request }) {
 // waiting on wall-clock time — no mock timers needed (they require Node 20.4+, and the SDK targets
 // Node 18+).
 function transportWith(client, timeoutMs = 60_000, backoffBaseMs = 0) {
-  return new WalletConnectTransport(client, { topic: TOPIC }, CHAIN, timeoutMs, backoffBaseMs);
+  return new WalletConnectTransport(
+    client,
+    { topic: TOPIC },
+    CHAIN,
+    timeoutMs,
+    backoffBaseMs,
+  );
 }
 
 test("request resolves with the wallet's response on the happy path", async () => {
@@ -58,41 +64,63 @@ test("request resolves with the wallet's response on the happy path", async () =
 
 test("request throws METHOD_NOT_SUPPORTED without ever reaching the wallet", async () => {
   const request = mock.fn(async () => ({ ok: true }));
-  const t = transportWith(mockClient({ methods: ["some_other_method"], request }));
+  const t = transportWith(
+    mockClient({ methods: ["some_other_method"], request }),
+  );
 
-  await assert.rejects(() => t.request(SIGN_METHOD, {}), (e) => {
-    assert.equal(e.code, "METHOD_NOT_SUPPORTED");
-    return true;
-  });
-  assert.equal(request.mock.callCount(), 0, "must not prompt a wallet it cannot use");
+  await assert.rejects(
+    () => t.request(SIGN_METHOD, {}),
+    (e) => {
+      assert.equal(e.code, "METHOD_NOT_SUPPORTED");
+      return true;
+    },
+  );
+  assert.equal(
+    request.mock.callCount(),
+    0,
+    "must not prompt a wallet it cannot use",
+  );
 });
 
 test("supports() treats an empty granted-method list as unknown-but-allowed", () => {
-  const t = transportWith(mockClient({ methods: [], request: async () => null }));
+  const t = transportWith(
+    mockClient({ methods: [], request: async () => null }),
+  );
   assert.equal(t.supports(SIGN_METHOD), true);
 });
 
 test("request times out with WALLET_TIMEOUT when the wallet never answers", async () => {
   // A request that never settles — a tiny REAL timeout must win the race.
-  const t = transportWith(mockClient({ methods: [], request: () => new Promise(() => {}) }), 10);
+  const t = transportWith(
+    mockClient({ methods: [], request: () => new Promise(() => {}) }),
+    10,
+  );
 
-  await assert.rejects(() => t.request(SIGN_METHOD, {}), (e) => {
-    assert.equal(e.code, "WALLET_TIMEOUT");
-    return true;
-  });
+  await assert.rejects(
+    () => t.request(SIGN_METHOD, {}),
+    (e) => {
+      assert.equal(e.code, "WALLET_TIMEOUT");
+      return true;
+    },
+  );
 });
 
 test("request retries ONLY a transient relay-publish failure, then succeeds", async () => {
   let attempt = 0;
   const request = mock.fn(async () => {
     attempt += 1;
-    if (attempt === 1) throw new Error("Failed or timed out to publish payload");
+    if (attempt === 1)
+      throw new Error("Failed or timed out to publish payload");
     return "signed";
   });
   const t = transportWith(mockClient({ methods: [], request }));
 
   assert.equal(await t.request(SIGN_METHOD, {}), "signed");
-  assert.equal(request.mock.callCount(), 2, "retried the transient publish failure exactly once");
+  assert.equal(
+    request.mock.callCount(),
+    2,
+    "retried the transient publish failure exactly once",
+  );
 });
 
 test("request exhausts 3 attempts on repeated transient failures, then throws", async () => {
@@ -101,7 +129,10 @@ test("request exhausts 3 attempts on repeated transient failures, then throws", 
   });
   const t = transportWith(mockClient({ methods: [], request }));
 
-  await assert.rejects(() => t.request(SIGN_METHOD, {}), /WebSocket connection failed/);
+  await assert.rejects(
+    () => t.request(SIGN_METHOD, {}),
+    /WebSocket connection failed/,
+  );
   assert.equal(request.mock.callCount(), 3, "MAX_ATTEMPTS = 3");
 });
 
@@ -112,7 +143,11 @@ test("request never re-issues a user rejection — no double prompt", async () =
   const t = transportWith(mockClient({ methods: [], request }));
 
   await assert.rejects(() => t.request(SIGN_METHOD, {}), /User rejected/);
-  assert.equal(request.mock.callCount(), 1, "a rejection reaches the wallet exactly once");
+  assert.equal(
+    request.mock.callCount(),
+    1,
+    "a rejection reaches the wallet exactly once",
+  );
 });
 
 test("disconnect is best-effort and swallows client errors", async () => {

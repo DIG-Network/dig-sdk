@@ -48,14 +48,20 @@ interface WcSession {
 }
 interface WcSignClient {
   connect(args: {
-    optionalNamespaces: Record<string, { methods: string[]; chains: string[]; events: string[] }>;
+    optionalNamespaces: Record<
+      string,
+      { methods: string[]; chains: string[]; events: string[] }
+    >;
   }): Promise<{ uri?: string; approval: () => Promise<WcSession> }>;
   request(args: {
     topic: string;
     chainId: string;
     request: { method: string; params: unknown };
   }): Promise<unknown>;
-  disconnect(args: { topic: string; reason: { code: number; message: string } }): Promise<void>;
+  disconnect(args: {
+    topic: string;
+    reason: { code: number; message: string };
+  }): Promise<void>;
   session: {
     get(topic: string): WcSession | undefined;
     getAll(): WcSession[];
@@ -92,7 +98,9 @@ export class WalletConnectTransport implements WalletTransport {
    * Initialize SignClient, open a pairing (emitting the URI via `onUri`), and resolve to a
    * connected transport once the user approves in Sage. Requires `@walletconnect/sign-client`.
    */
-  static async connect(options: WalletConnectOptions): Promise<WalletConnectTransport> {
+  static async connect(
+    options: WalletConnectOptions,
+  ): Promise<WalletConnectTransport> {
     const chain = options.chain ?? DEFAULT_CHAIN;
     const timeout = options.requestTimeoutMs ?? 60_000;
     const SignClient = await loadSignClient();
@@ -104,7 +112,11 @@ export class WalletConnectTransport implements WalletTransport {
     const { uri, approval } = await client.connect({
       // optionalNamespaces ONLY — Sage rejects requiredNamespaces.
       optionalNamespaces: {
-        chia: { methods: WALLET_METHODS as unknown as string[], chains: [chain], events: [] },
+        chia: {
+          methods: WALLET_METHODS as unknown as string[],
+          chains: [chain],
+          events: [],
+        },
       },
     });
     if (uri && options.onUri) options.onUri(uri);
@@ -134,7 +146,9 @@ export class WalletConnectTransport implements WalletTransport {
     for (let i = sessions.length - 1; i >= 0; i--) {
       const s = sessions[i]!;
       const methods = s.namespaces?.chia?.methods ?? [];
-      if ((SIGN_METHODS as readonly string[]).some((m) => methods.includes(m))) {
+      if (
+        (SIGN_METHODS as readonly string[]).some((m) => methods.includes(m))
+      ) {
         return new WalletConnectTransport(client, s, chain, timeout);
       }
     }
@@ -143,7 +157,9 @@ export class WalletConnectTransport implements WalletTransport {
 
   private sessionMethods(): string[] {
     try {
-      return this.client.session.get(this.topic)?.namespaces?.chia?.methods ?? [];
+      return (
+        this.client.session.get(this.topic)?.namespaces?.chia?.methods ?? []
+      );
     } catch {
       return [];
     }
@@ -199,7 +215,11 @@ export class WalletConnectTransport implements WalletTransport {
       );
     });
     return Promise.race([
-      this.client.request({ topic: this.topic, chainId: this.chain, request: { method, params } }),
+      this.client.request({
+        topic: this.topic,
+        chainId: this.chain,
+        request: { method, params },
+      }),
       timeout,
     ]).finally(() => clearTimeout(t));
   }
@@ -221,17 +241,24 @@ function sleep(ms: number): Promise<void> {
 }
 
 // Dynamically import the optional peer dep, with a clear error if it isn't installed.
-async function loadSignClient(): Promise<{ init(opts: unknown): Promise<unknown> }> {
+async function loadSignClient(): Promise<{
+  init(opts: unknown): Promise<unknown>;
+}> {
   try {
     // Optional peer dependency — may not be installed (e.g. an injected-only dapp). The dynamic
     // import is wrapped so a missing module surfaces as the actionable error below, and the
     // specifier is suppressed for type resolution since the package is not a hard dependency.
+    // The suppression below is intentionally the ignore directive (not the expect-error one): the
+    // specifier resolves when the optional peer dependency IS installed, so an expect-error would
+    // itself error in that case.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore -- optional peer dependency, not resolvable when uninstalled
     const mod = (await import("@walletconnect/sign-client")) as {
       default?: { init(opts: unknown): Promise<unknown> };
       init?(opts: unknown): Promise<unknown>;
     };
-    const SignClient = mod.default ?? (mod as { init(opts: unknown): Promise<unknown> });
+    const SignClient =
+      mod.default ?? (mod as { init(opts: unknown): Promise<unknown> });
     if (!SignClient || typeof SignClient.init !== "function") {
       throw new Error("unexpected @walletconnect/sign-client shape");
     }

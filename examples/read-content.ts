@@ -21,6 +21,8 @@ export async function readContent(): Promise<void> {
   console.log(text);
 
   // Derive the URN's keys client-side (nothing sent to the network).
-  const keys = await dig.deriveUrnKeys({ urn: "urn:dig:chia:<storeId>/index.html" });
+  const keys = await dig.deriveUrnKeys({
+    urn: "urn:dig:chia:<storeId>/index.html",
+  });
   console.log(keys.retrievalKey, keys.decryptionKey);
 }

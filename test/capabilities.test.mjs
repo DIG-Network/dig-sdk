@@ -10,13 +10,24 @@ import { fileURLToPath } from "node:url";
 import { SDK_VERSION, capabilities, describe } from "../dist/index.js";
 
 const pkg = JSON.parse(
-  readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+  readFileSync(
+    fileURLToPath(new URL("../package.json", import.meta.url)),
+    "utf8",
+  ),
 );
 
 test("SDK_VERSION is exported and matches package.json (injected at build time)", () => {
   assert.equal(typeof SDK_VERSION, "string");
-  assert.equal(SDK_VERSION, pkg.version, "SDK_VERSION must equal package.json version");
-  assert.notEqual(SDK_VERSION, "0.0.0-dev", "version must be injected by the build, not the fallback");
+  assert.equal(
+    SDK_VERSION,
+    pkg.version,
+    "SDK_VERSION must equal package.json version",
+  );
+  assert.notEqual(
+    SDK_VERSION,
+    "0.0.0-dev",
+    "version must be injected by the build, not the fallback",
+  );
 });
 
 test("capabilities() returns the machine-readable SDK surface", () => {
@@ -27,7 +38,10 @@ test("capabilities() returns the machine-readable SDK surface", () => {
   // Modules: the four pillars must be discoverable by name.
   const moduleNames = cap.modules.map((m) => m.name);
   for (const m of ["ChiaProvider", "DigClient", "Paywall", "spend"]) {
-    assert.ok(moduleNames.includes(m), `capabilities().modules must include ${m}`);
+    assert.ok(
+      moduleNames.includes(m),
+      `capabilities().modules must include ${m}`,
+    );
   }
   // Every module carries a summary + an import entry.
   for (const m of cap.modules) {
@@ -39,7 +53,10 @@ test("capabilities() returns the machine-readable SDK surface", () => {
   // Wallet method surface mirrors the canonical list.
   assert.ok(cap.walletMethods.includes("chip0002_signCoinSpends"));
   assert.ok(cap.walletMethods.includes("chia_getAddress"));
-  assert.deepEqual(cap.signMethods, ["chia_signMessageByAddress", "chip0002_signMessage"]);
+  assert.deepEqual(cap.signMethods, [
+    "chia_signMessageByAddress",
+    "chip0002_signMessage",
+  ]);
 
   // Transports + chains.
   assert.deepEqual([...cap.transports].sort(), ["injected", "walletconnect"]);

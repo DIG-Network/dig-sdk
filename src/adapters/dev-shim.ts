@@ -29,7 +29,8 @@ export interface DevShimOptions {
 }
 
 /** A clearly-fake default dev address (so it is obvious in the UI this is not a real wallet). */
-const DEFAULT_DEV_ADDRESS = "xch1dev0000000000000000000000000000000000000000000000000000devshim";
+const DEFAULT_DEV_ADDRESS =
+  "xch1dev0000000000000000000000000000000000000000000000000000devshim";
 
 /** JSON-encode a string for safe inlining into a script literal. */
 function lit(s: string): string {

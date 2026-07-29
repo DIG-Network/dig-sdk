@@ -33,7 +33,9 @@ const chip35Dts = readFileSync(
   "utf8",
 );
 const chip35Exports = new Set(
-  [...chip35Dts.matchAll(/export (?:declare )?function ([A-Za-z0-9_]+)/g)].map((m) => m[1]),
+  [...chip35Dts.matchAll(/export (?:declare )?function ([A-Za-z0-9_]+)/g)].map(
+    (m) => m[1],
+  ),
 );
 
 // The asset builders + helpers introduced in chip35-dl-coin-wasm 0.5.0. The dep bump to ^0.5.0 is
@@ -134,13 +136,30 @@ test("/spend re-exports the chip35 0.13.0 funded bulk-mint builder (bulkMintFund
 
 test("/spend keeps re-exporting the core CHIP-0035 store builders", () => {
   for (const name of CORE_STORE_EXPORTS) {
-    assert.ok(chip35Exports.has(name), `@dignetwork/dig-sdk/spend must re-export ${name}`);
+    assert.ok(
+      chip35Exports.has(name),
+      `@dignetwork/dig-sdk/spend must re-export ${name}`,
+    );
   }
 });
 
 test("built dist/spend.{js,cjs} re-export from chip35-dl-coin-wasm (dist is present)", () => {
-  const esm = readFileSync(new URL("../dist/spend.js", import.meta.url), "utf8");
-  const cjs = readFileSync(new URL("../dist/spend.cjs", import.meta.url), "utf8");
-  assert.match(esm, /@dignetwork\/chip35-dl-coin-wasm/, "dist/spend.js must re-export chip35");
-  assert.match(cjs, /@dignetwork\/chip35-dl-coin-wasm/, "dist/spend.cjs must re-export chip35");
+  const esm = readFileSync(
+    new URL("../dist/spend.js", import.meta.url),
+    "utf8",
+  );
+  const cjs = readFileSync(
+    new URL("../dist/spend.cjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    esm,
+    /@dignetwork\/chip35-dl-coin-wasm/,
+    "dist/spend.js must re-export chip35",
+  );
+  assert.match(
+    cjs,
+    /@dignetwork\/chip35-dl-coin-wasm/,
+    "dist/spend.cjs must re-export chip35",
+  );
 });

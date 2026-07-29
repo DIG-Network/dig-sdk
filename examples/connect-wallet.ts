@@ -27,7 +27,9 @@ export async function connectAndSign(): Promise<void> {
   const address = await provider.getAddress();
   console.log("address", address);
 
-  const { publicKey, signature } = await provider.signMessage("Login to My DIG dapp");
+  const { publicKey, signature } = await provider.signMessage(
+    "Login to My DIG dapp",
+  );
   console.log(publicKey, signature);
 
   const xch = await provider.getXchBalance();
@@ -42,7 +44,9 @@ export async function buildAndSignSpend(): Promise<void> {
   console.log(aggregatedSignature);
 }
 
-declare function renderChooser(connectors: ReturnType<typeof ChiaProvider.listConnectors>): Promise<string>;
+declare function renderChooser(
+  connectors: ReturnType<typeof ChiaProvider.listConnectors>,
+): Promise<string>;
 
 // Offer the user an explicit 'Browser Wallet' vs 'WalletConnect' choice instead of the silent
 // `mode: "auto"` preference above (#63) — never auto-bind to whichever wallet is injected.

@@ -16,7 +16,8 @@ function mockTransport({ responses = {}, supports = () => true } = {}) {
     backend: "injected",
     chain: "chia:mainnet",
     topic: "topic-1",
-    supports: typeof supports === "function" ? supports : (m) => supports.includes(m),
+    supports:
+      typeof supports === "function" ? supports : (m) => supports.includes(m),
     request: async (method, params) => {
       calls.push({ method, params });
       const r = responses[method];
@@ -30,16 +31,26 @@ function mockTransport({ responses = {}, supports = () => true } = {}) {
 const provider = (opts) => ChiaProvider.fromTransport(mockTransport(opts));
 
 test("getAddress tolerates string / {address} / {data.address} / null and caches", async () => {
-  assert.equal(await provider({ responses: { chia_getAddress: "xch1abc" } }).getAddress(), "xch1abc");
   assert.equal(
-    await provider({ responses: { chia_getAddress: { address: "xch1nested" } } }).getAddress(),
+    await provider({ responses: { chia_getAddress: "xch1abc" } }).getAddress(),
+    "xch1abc",
+  );
+  assert.equal(
+    await provider({
+      responses: { chia_getAddress: { address: "xch1nested" } },
+    }).getAddress(),
     "xch1nested",
   );
   assert.equal(
-    await provider({ responses: { chia_getAddress: { data: { address: "xch1data" } } } }).getAddress(),
+    await provider({
+      responses: { chia_getAddress: { data: { address: "xch1data" } } },
+    }).getAddress(),
     "xch1data",
   );
-  assert.equal(await provider({ responses: { chia_getAddress: {} } }).getAddress(), null);
+  assert.equal(
+    await provider({ responses: { chia_getAddress: {} } }).getAddress(),
+    null,
+  );
 
   const t = mockTransport({ responses: { chia_getAddress: "xch1cached" } });
   const p = ChiaProvider.fromTransport(t);
@@ -50,7 +61,8 @@ test("getAddress tolerates string / {address} / {data.address} / null and caches
 });
 
 test("getPublicKeys tolerates array / publicKeys / public_keys / keys / none", async () => {
-  const from = (resp) => provider({ responses: { chip0002_getPublicKeys: resp } }).getPublicKeys();
+  const from = (resp) =>
+    provider({ responses: { chip0002_getPublicKeys: resp } }).getPublicKeys();
   assert.deepEqual(await from(["0xk"]), ["0xk"]);
   assert.deepEqual(await from({ publicKeys: ["a"] }), ["a"]);
   assert.deepEqual(await from({ public_keys: ["b"] }), ["b"]);
@@ -62,7 +74,10 @@ test("signMessage prefers sign-by-address and 0x-normalizes the key", async () =
   const p = provider({
     supports: ["chia_signMessageByAddress"],
     responses: {
-      chia_signMessageByAddress: { public_key: "deadbeef", aggregated_signature: "0xsig" },
+      chia_signMessageByAddress: {
+        public_key: "deadbeef",
+        aggregated_signature: "0xsig",
+      },
     },
   });
   const res = await p.signMessage("hello", "xch1me");
@@ -83,8 +98,14 @@ test("signMessage falls back to sign-by-key when the by-address method is not gr
 });
 
 test("signMessage throws WALLET_NO_KEYS when the fallback wallet has no keys", async () => {
-  const p = provider({ supports: () => false, responses: { chip0002_getPublicKeys: [] } });
-  await assert.rejects(() => p.signMessage("hi", "xch1me"), (e) => e.code === "WALLET_NO_KEYS");
+  const p = provider({
+    supports: () => false,
+    responses: { chip0002_getPublicKeys: [] },
+  });
+  await assert.rejects(
+    () => p.signMessage("hi", "xch1me"),
+    (e) => e.code === "WALLET_NO_KEYS",
+  );
 });
 
 test("signMessage defaults the address to the wallet's own address", async () => {
@@ -96,12 +117,17 @@ test("signMessage defaults the address to the wallet's own address", async () =>
     },
   });
   await ChiaProvider.fromTransport(t).signMessage("msg");
-  const signCall = t.calls.find((c) => c.method === "chia_signMessageByAddress");
+  const signCall = t.calls.find(
+    (c) => c.method === "chia_signMessageByAddress",
+  );
   assert.equal(signCall.params.address, "xch1self");
 });
 
 test("signCoinSpends tolerates string / signature / aggregatedSignature / none", async () => {
-  const from = (resp) => provider({ responses: { chip0002_signCoinSpends: resp } }).signCoinSpends([]);
+  const from = (resp) =>
+    provider({ responses: { chip0002_signCoinSpends: resp } }).signCoinSpends(
+      [],
+    );
   assert.equal(await from("0xagg"), "0xagg");
   assert.equal(await from({ signature: "0xa" }), "0xa");
   assert.equal(await from({ aggregatedSignature: "0xb" }), "0xb");
@@ -110,15 +136,22 @@ test("signCoinSpends tolerates string / signature / aggregatedSignature / none",
 });
 
 test("takeOffer passes through when supported and throws when not", async () => {
-  const ok = provider({ supports: ["chia_takeOffer"], responses: { chia_takeOffer: { id: 1 } } });
+  const ok = provider({
+    supports: ["chia_takeOffer"],
+    responses: { chia_takeOffer: { id: 1 } },
+  });
   assert.deepEqual(await ok.takeOffer("offer1", 5), { id: 1 });
 
   const no = provider({ supports: () => false });
-  await assert.rejects(() => no.takeOffer("offer1"), (e) => e.code === "METHOD_NOT_SUPPORTED");
+  await assert.rejects(
+    () => no.takeOffer("offer1"),
+    (e) => e.code === "METHOD_NOT_SUPPORTED",
+  );
 });
 
 test("balances fold the many casing shapes into a mojo string, null on absent/invalid", async () => {
-  const xch = (resp) => provider({ responses: { chip0002_getAssetBalance: resp } }).getXchBalance();
+  const xch = (resp) =>
+    provider({ responses: { chip0002_getAssetBalance: resp } }).getXchBalance();
   assert.equal(await xch({ confirmed: 100 }), "100");
   assert.equal(await xch({ spendable: 200 }), "200");
   assert.equal(await xch({ confirmedWalletBalance: 300 }), "300");
@@ -131,7 +164,9 @@ test("balances fold the many casing shapes into a mojo string, null on absent/in
 });
 
 test("getCatBalance strips a 0x prefix from the asset id it sends the wallet", async () => {
-  const t = mockTransport({ responses: { chip0002_getAssetBalance: { confirmed: 42 } } });
+  const t = mockTransport({
+    responses: { chip0002_getAssetBalance: { confirmed: 42 } },
+  });
   const bal = await ChiaProvider.fromTransport(t).getCatBalance("0xDEADbeef");
   assert.equal(bal, "42");
   const call = t.calls.find((c) => c.method === "chip0002_getAssetBalance");
@@ -141,18 +176,30 @@ test("getCatBalance strips a 0x prefix from the asset id it sends the wallet", a
 
 test("coin queries tolerate an array or a {coins} envelope, else empty", async () => {
   assert.deepEqual(
-    await provider({ responses: { chip0002_getAssetCoins: [{ c: 1 }] } }).getXchCoins(),
+    await provider({
+      responses: { chip0002_getAssetCoins: [{ c: 1 }] },
+    }).getXchCoins(),
     [{ c: 1 }],
   );
   assert.deepEqual(
-    await provider({ responses: { chip0002_getAssetCoins: { coins: [{ c: 2 }] } } }).getCatCoins("ab"),
+    await provider({
+      responses: { chip0002_getAssetCoins: { coins: [{ c: 2 }] } },
+    }).getCatCoins("ab"),
     [{ c: 2 }],
   );
-  assert.deepEqual(await provider({ responses: { chip0002_getAssetCoins: null } }).getXchCoins(), []);
+  assert.deepEqual(
+    await provider({
+      responses: { chip0002_getAssetCoins: null },
+    }).getXchCoins(),
+    [],
+  );
 });
 
 test("session, backend, supports and the raw request escape hatch reflect the transport", async () => {
-  const t = mockTransport({ supports: ["chip0002_getPublicKeys"], responses: { foo: "bar" } });
+  const t = mockTransport({
+    supports: ["chip0002_getPublicKeys"],
+    responses: { foo: "bar" },
+  });
   const p = ChiaProvider.fromTransport(t);
   assert.equal(p.backend, "injected");
   assert.equal(p.supports("chip0002_getPublicKeys"), true);
@@ -173,7 +220,11 @@ test("listConnectors always offers WalletConnect and detects no Browser Wallet i
   const bw = connectors.find((c) => c.id === "browser-wallet");
   assert.equal(wc.available, true);
   assert.equal(wc.backend, "walletconnect");
-  assert.equal(bw.available, false, "no injected window.chia under node --test");
+  assert.equal(
+    bw.available,
+    false,
+    "no injected window.chia under node --test",
+  );
 });
 
 test("connect() surfaces the actionable guard errors without a wallet present", async () => {

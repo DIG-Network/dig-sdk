@@ -83,7 +83,9 @@ async function sha256Hex(bytes: BufferSource): Promise<string> {
     return createHash("sha256").update(view).digest("hex");
   }
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function assertIntegrity(hex: string): void {
@@ -112,12 +114,14 @@ async function loadNode(): Promise<DigClientWasm> {
   const { createRequire } = await import("node:module");
   const { readFile } = await import("node:fs/promises");
   const require = createRequire(import.meta.url);
-  const wasmPath = require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
+  const wasmPath =
+    require.resolve("@dignetwork/dig-capsule-wasm/dig_client_bg.wasm");
   const buf = await readFile(wasmPath);
   const bytes = new Uint8Array(buf.byteLength);
   bytes.set(buf);
   assertIntegrity(await sha256Hex(bytes));
-  const mod = (await import("@dignetwork/dig-capsule-wasm/node")) as unknown as DigClientModule;
+  const mod =
+    (await import("@dignetwork/dig-capsule-wasm/node")) as unknown as DigClientModule;
   return mod as unknown as DigClientWasm;
 }
 
@@ -134,7 +138,9 @@ async function loadNode(): Promise<DigClientWasm> {
 //     over an untrusted delivery path use `configureWasm({ wasmUrl })` above.
 async function loadBrowser(): Promise<DigClientWasm> {
   const glueHref = _config.glueUrl ?? "@dignetwork/dig-capsule-wasm/web";
-  const mod = (await import(/* @vite-ignore */ glueHref)) as unknown as DigClientModule;
+  const mod = (await import(
+    /* @vite-ignore */ glueHref
+  )) as unknown as DigClientModule;
   if (typeof mod.default !== "function") {
     throw new DigSdkError(
       "WASM_LOAD_FAILED",
@@ -150,10 +156,14 @@ async function loadBrowser(): Promise<DigClientWasm> {
       const wasmUrl = _config.wasmUrl!;
       const res = await fetch(wasmUrl);
       if (!res.ok)
-        throw new DigSdkError("WASM_LOAD_FAILED", `dig-client wasm fetch failed (${res.status})`, {
-          httpStatus: res.status,
-          wasmUrl,
-        });
+        throw new DigSdkError(
+          "WASM_LOAD_FAILED",
+          `dig-client wasm fetch failed (${res.status})`,
+          {
+            httpStatus: res.status,
+            wasmUrl,
+          },
+        );
       bytes = await res.arrayBuffer();
     }
     assertIntegrity(await sha256Hex(bytes));
@@ -177,4 +187,3 @@ export function loadDigClientWasm(): Promise<DigClientWasm> {
   });
   return _ready;
 }
-

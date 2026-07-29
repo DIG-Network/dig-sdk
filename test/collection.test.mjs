@@ -50,7 +50,13 @@ test("getCollection omits did when not supplied", async () => {
   const captured = {};
   const dig = new DigClient({
     fetch: mockRpc(
-      { did: null, declared_did: null, item_count: 0, resolved_count: 0, royalty_basis_points: null },
+      {
+        did: null,
+        declared_did: null,
+        item_count: 0,
+        resolved_count: 0,
+        royalty_basis_points: null,
+      },
       captured,
     ),
   });
@@ -88,7 +94,11 @@ test("listCollectionItems sends dig.listCollectionItems with offset/limit and re
     next_offset: 1,
   };
   const dig = new DigClient({ fetch: mockRpc(page, captured) });
-  const got = await dig.listCollectionItems({ launcherIds: LAUNCHERS, offset: 0, limit: 50 });
+  const got = await dig.listCollectionItems({
+    launcherIds: LAUNCHERS,
+    offset: 0,
+    limit: 50,
+  });
 
   assert.equal(captured.method, "dig.listCollectionItems");
   assert.deepEqual(captured.params.launcher_ids, LAUNCHERS);
@@ -103,7 +113,10 @@ test("listCollectionItems sends dig.listCollectionItems with offset/limit and re
 test("listCollectionItems omits offset/limit when not supplied (server defaults apply)", async () => {
   const captured = {};
   const dig = new DigClient({
-    fetch: mockRpc({ items: [], offset: 0, limit: 50, total: 0, next_offset: null }, captured),
+    fetch: mockRpc(
+      { items: [], offset: 0, limit: 50, total: 0, next_offset: null },
+      captured,
+    ),
   });
   await dig.listCollectionItems({ launcherIds: LAUNCHERS });
   assert.equal(captured.params.offset, undefined);
@@ -119,7 +132,10 @@ test("a JSON-RPC error surfaces as a coded DigSdkError (RPC_ERROR)", async () =>
         return {
           jsonrpc: "2.0",
           id: body.id ?? 1,
-          error: { code: -32602, message: "params.launcher_ids must be an array" },
+          error: {
+            code: -32602,
+            message: "params.launcher_ids must be an array",
+          },
         };
       },
     };
@@ -127,6 +143,8 @@ test("a JSON-RPC error surfaces as a coded DigSdkError (RPC_ERROR)", async () =>
   const dig = new DigClient({ fetch: errFetch });
   await assert.rejects(
     () => dig.getCollection({ launcherIds: [] }),
-    (e) => isDigSdkError(e, "RPC_ERROR") && e.context.rpcMethod === "dig.getCollection",
+    (e) =>
+      isDigSdkError(e, "RPC_ERROR") &&
+      e.context.rpcMethod === "dig.getCollection",
   );
 });

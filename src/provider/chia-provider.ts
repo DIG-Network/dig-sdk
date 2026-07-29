@@ -135,7 +135,8 @@ export class ChiaProvider {
     const chain = options.chain ?? DEFAULT_CHAIN;
 
     const tryInjected = async (): Promise<ChiaProvider | null> => {
-      if (!isInjectedAvailable({ anyChia: options.acceptAnyInjected })) return null;
+      if (!isInjectedAvailable({ anyChia: options.acceptAnyInjected }))
+        return null;
       const provider = getInjectedProvider()!;
       const transport = new InjectedTransport(provider, chain);
       await transport.connect();
@@ -186,7 +187,9 @@ export class ChiaProvider {
    * const chosen = connectors.find((c) => c.id === userPick)!;
    * const provider = await ChiaProvider.connect({ mode: chosen.id, walletConnect });
    */
-  static listConnectors(options: { acceptAnyInjected?: boolean } = {}): ConnectorInfo[] {
+  static listConnectors(
+    options: { acceptAnyInjected?: boolean } = {},
+  ): ConnectorInfo[] {
     return [
       {
         id: "browser-wallet",
@@ -213,7 +216,9 @@ export class ChiaProvider {
   /** The wallet's receive address (cached after first read). */
   async getAddress(): Promise<string | null> {
     if (this.cachedAddress === undefined) {
-      this.cachedAddress = await M.getAddress((m, p) => this.transport.request(m, p));
+      this.cachedAddress = await M.getAddress((m, p) =>
+        this.transport.request(m, p),
+      );
     }
     return this.cachedAddress;
   }
@@ -269,7 +274,11 @@ export class ChiaProvider {
 
   /** Unspent CAT coins for `assetIdHex`. */
   getCatCoins(assetIdHex: string, limit?: number): Promise<unknown[]> {
-    return M.getCatCoins((m, p) => this.transport.request(m, p), assetIdHex, limit);
+    return M.getCatCoins(
+      (m, p) => this.transport.request(m, p),
+      assetIdHex,
+      limit,
+    );
   }
 
   /** Disconnect the wallet (best-effort). */

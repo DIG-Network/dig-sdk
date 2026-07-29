@@ -25,7 +25,9 @@ test("parseDigToml: reads kebab-case keys", () => {
 });
 
 test("parseDigToml: accepts snake_case aliases", () => {
-  const t = parseDigToml(`store_id = "${STORE}"\noutput_dir = "build"\nbuild_command = "x"`);
+  const t = parseDigToml(
+    `store_id = "${STORE}"\noutput_dir = "build"\nbuild_command = "x"`,
+  );
   assert.equal(t.storeId, STORE);
   assert.equal(t.outputDir, "build");
   assert.equal(t.buildCommand, "x");

@@ -44,7 +44,10 @@ test("retrievalKey is SHA-256(canonical URN): 64-hex, deterministic, key-sensiti
 
 test("empty resource key resolves to index.html (default view)", async () => {
   const dig = new DigClient();
-  assert.equal(await dig.retrievalKey(STORE, ""), await dig.retrievalKey(STORE, "index.html"));
+  assert.equal(
+    await dig.retrievalKey(STORE, ""),
+    await dig.retrievalKey(STORE, "index.html"),
+  );
 });
 
 test("deriveKey: 32-byte (64-hex) AES key; salt changes the key", async () => {
@@ -58,7 +61,9 @@ test("deriveKey: 32-byte (64-hex) AES key; salt changes the key", async () => {
 
 test("deriveUrnKeys: parses + derives both keys from a URN string", async () => {
   const dig = new DigClient();
-  const k = await dig.deriveUrnKeys({ urn: `urn:dig:chia:${STORE}/index.html` });
+  const k = await dig.deriveUrnKeys({
+    urn: `urn:dig:chia:${STORE}/index.html`,
+  });
   assert.equal(k.storeId, STORE);
   assert.equal(k.resourceKey, "index.html");
   assert.equal(k.retrievalKey, await dig.retrievalKey(STORE, "index.html"));
@@ -67,7 +72,9 @@ test("deriveUrnKeys: parses + derives both keys from a URN string", async () => 
 
 test("encrypt → decrypt roundtrip under the URN-derived key (public store)", async () => {
   const wasm = await loadDigClientWasm();
-  const plaintext = new TextEncoder().encode("hello, verified + encrypted DIG content");
+  const plaintext = new TextEncoder().encode(
+    "hello, verified + encrypted DIG content",
+  );
   const ciphertext = wasm.encryptResource(STORE, "msg.txt", plaintext);
   assert.ok(ciphertext.length > plaintext.length); // GCM-SIV tag overhead
   const key = wasm.deriveKey(STORE, "msg.txt");
@@ -136,6 +143,9 @@ test("DigClient.read fetches by retrieval key, verifies, and decrypts (mock RPC)
   assert.deepEqual(res.bytes, plaintext);
   assert.equal(res.root, root);
 
-  const text = await dig.readText({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  const text = await dig.readText({
+    urn: `urn:dig:chia:${STORE}/index.html`,
+    root,
+  });
   assert.equal(text, "served + decrypted via mock RPC");
 });

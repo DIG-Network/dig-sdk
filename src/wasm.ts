@@ -7,7 +7,11 @@ export interface DigClientWasm {
   /** `retrieval_key = SHA-256(canonical rootless urn)`, lowercase hex. Empty key ⇒ index.html. */
   retrievalKey(storeIdHex: string, resourceKey: string): string;
   /** Derive the 32-byte AES-256 content key (lowercase hex). `saltHex` for a private store. */
-  deriveKey(storeIdHex: string, resourceKey: string, saltHex?: string | null): string;
+  deriveKey(
+    storeIdHex: string,
+    resourceKey: string,
+    saltHex?: string | null,
+  ): string;
   /**
    * Verify `ciphertext` is included under `trustedRootHex` via the base64 merkle `proofB64`.
    * Returns true on success, false on ANY verification failure (a decoy returns false rather than

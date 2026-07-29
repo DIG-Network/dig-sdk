@@ -29,7 +29,6 @@ export interface InjectedChiaProvider {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var chia: InjectedChiaProvider | undefined;
   interface Window {
     chia?: InjectedChiaProvider;
