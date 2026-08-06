@@ -16,6 +16,24 @@
 
 // ---- Read-crypto client + loader ----
 export { DigClient, DEFAULT_RPC, type DigClientOptions } from "./dig-client.js";
+
+// ---- Client → node endpoint resolution (CLAUDE.md §5.3 ladder) ----
+export {
+  resolveNodeEndpoint,
+  makeHealthProbe,
+  isBrowserEnv,
+  readEnvNodeUrl,
+  NODE_LADDER,
+  DIG_LOCAL_URL,
+  LOOPBACK_URL,
+  GATEWAY_URL,
+  DEFAULT_PROBE_TIMEOUT_MS,
+  type NodeCandidate,
+  type NodeProbe,
+  type NodeResolutionVia,
+  type ResolveNodeInput,
+  type ResolvedNode,
+} from "./node-resolver.js";
 export {
   loadDigClientWasm,
   configureWasm,

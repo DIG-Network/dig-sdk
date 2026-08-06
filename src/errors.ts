@@ -32,6 +32,14 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
   ROOT_REQUIRED: "ROOT_REQUIRED",
   /** The resource did not decrypt+authenticate under this URN (wrong key/salt, or a decoy). */
   DECRYPT_FAILED: "DECRYPT_FAILED",
+  /**
+   * The served content did not verify against the on-chain root (its inclusion proof failed). The
+   * fail-closed default readers (`read`/`readText`) throw this rather than return chain-unbacked
+   * bytes — decryption success alone proves only "knows a public key", NOT chain origin, so an
+   * untrusted/spoofed node could otherwise serve attacker plaintext. Callers that deliberately want
+   * the advisory bytes use `readResource` (which returns `{ verified, decrypted }`).
+   */
+  CONTENT_UNVERIFIED: "CONTENT_UNVERIFIED",
   /** The dig RPC could not be reached (network/transport failure). */
   RPC_TRANSPORT: "RPC_TRANSPORT",
   /** The dig RPC responded with an HTTP error or a JSON-RPC `error` object. */

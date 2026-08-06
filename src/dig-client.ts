@@ -27,9 +27,24 @@ import type {
   UrnKeys,
 } from "./types.js";
 import { DigSdkError } from "./errors.js";
+import {
+  DEFAULT_PROBE_TIMEOUT_MS,
+  GATEWAY_URL,
+  isBrowserEnv,
+  makeHealthProbe,
+  readEnvNodeUrl,
+  resolveNodeEndpoint,
+  type NodeProbe,
+  type ResolvedNode,
+} from "./node-resolver.js";
 
-/** The default public dig RPC endpoint. */
-export const DEFAULT_RPC = "https://rpc.dig.net";
+/**
+ * The public gateway endpoint — the §5.3 ladder's TERMINAL fallback, NOT a privileged primary. It is
+ * exported for back-compat and as `capabilities().defaultRpc`; a `DigClient` with no explicit `rpc`
+ * now resolves the endpoint through the §5.3 ladder (local node first), falling back to this only when
+ * no local node answers. Do NOT read this as "the default endpoint" — it is the last resort.
+ */
+export const DEFAULT_RPC = GATEWAY_URL;
 
 // The backend caps each dig.getContent chunk at 3 MiB (Lambda/APIGW response ceiling); the client
 // loops chunks until `complete`.
@@ -37,10 +52,28 @@ const RPC_CHUNK_BYTES = 3 * 1024 * 1024;
 
 /** Options to construct a DigClient. */
 export interface DigClientOptions {
-  /** dig RPC endpoint. Defaults to the public `https://rpc.dig.net`. */
+  /**
+   * An explicit dig node/RPC endpoint. When set it OVERRIDES the §5.3 resolution ladder entirely
+   * (no probing). When omitted, the endpoint is resolved through the ladder: `DIG_NODE_URL` env
+   * override › `dig.local` › `localhost` › the `https://rpc.dig.net` gateway (terminal fallback) —
+   * so the user's OWN local node is preferred and the public gateway is only the last resort.
+   */
   rpc?: string;
   /** Override `fetch` (e.g. an instrumented one). Defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /**
+   * Override the §5.3 local-node health probe. Injected mainly for tests (deterministic, no network);
+   * defaults to a cheap `GET /health` on a short timeout using this client's `fetch`.
+   */
+  nodeProbe?: NodeProbe;
+  /** Per-rung probe timeout (ms) for the §5.3 ladder. Defaults to {@link DEFAULT_PROBE_TIMEOUT_MS}. */
+  probeTimeoutMs?: number;
+  /**
+   * Force the browser/Node resolution mode. Defaults to auto-detection ({@link isBrowserEnv}); a
+   * browser client skips the local rungs and uses explicit › env › gateway (mixed-content / cert
+   * constraints forbid probing a plaintext-loopback or self-signed-localhost node from a page).
+   */
+  isBrowser?: boolean;
 }
 
 interface GetContentResult {
@@ -68,14 +101,46 @@ interface GetContentResult {
  * if (decrypted) console.log(new TextDecoder().decode(bytes));
  */
 export class DigClient {
-  private readonly rpc: string;
   private readonly fetchImpl: typeof fetch;
+  /** The explicit endpoint override (constructor `rpc`), or null to resolve via the §5.3 ladder. */
+  private readonly explicitRpc: string | null;
+  private readonly nodeProbe: NodeProbe;
+  private readonly probeTimeoutMs: number;
+  private readonly isBrowser: boolean;
+  /** Memoized §5.3 resolution — resolved once per instance and reused for its lifetime. */
+  private resolvedNode: Promise<ResolvedNode> | null = null;
 
   constructor(options: DigClientOptions = {}) {
-    this.rpc = options.rpc ?? DEFAULT_RPC;
     this.fetchImpl =
       options.fetch ??
       (typeof fetch === "function" ? fetch.bind(globalThis) : undefinedFetch());
+    this.explicitRpc = options.rpc ?? null;
+    this.nodeProbe = options.nodeProbe ?? makeHealthProbe(this.fetchImpl);
+    this.probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+    this.isBrowser = options.isBrowser ?? isBrowserEnv();
+  }
+
+  /**
+   * The dig node endpoint this client reads from, resolved through the §5.3 ladder (explicit ›
+   * `DIG_NODE_URL` › `dig.local` › `localhost` › gateway) and MEMOIZED for the instance's lifetime.
+   * A per-call `opts.rpc` still overrides it. Exposed so callers can learn which node was chosen.
+   */
+  async resolveEndpoint(): Promise<ResolvedNode> {
+    if (!this.resolvedNode) {
+      this.resolvedNode = resolveNodeEndpoint({
+        explicit: this.explicitRpc,
+        env: readEnvNodeUrl(),
+        isBrowser: this.isBrowser,
+        probe: this.nodeProbe,
+        timeoutMs: this.probeTimeoutMs,
+      });
+    }
+    return this.resolvedNode;
+  }
+
+  /** The endpoint for a call: a per-call `opts.rpc` override, else the memoized §5.3 resolution. */
+  private async endpoint(opts: ReadOptions): Promise<string> {
+    return opts.rpc ?? (await this.resolveEndpoint()).url;
   }
 
   /** Load the read-crypto wasm (integrity per the loader path). Exposed for callers wanting the raw functions. */
@@ -141,10 +206,22 @@ export class DigClient {
   }
 
   /**
-   * Fetch + verify + decrypt one resource by URN. `root` is the on-chain generation root to verify
-   * against (resolved by the caller from the chain); when omitted, the root embedded in the URN is
-   * used. Returns the bytes plus advisory `verified`/`decrypted` flags. NEVER throws "not found"
-   * (presence is unknowable) — it throws only on a transport failure.
+   * Fetch + verify + decrypt one resource by URN — the FAIL-CLOSED default reader. `root` is the
+   * on-chain generation root to verify against (resolved by the caller from the chain); when omitted,
+   * the root embedded in the URN is used.
+   *
+   * INTEGRITY (why this throws). Decryption success alone proves only "knows a public key": for a
+   * public (saltless) store the content key is derivable from the public URN, so an untrusted or
+   * spoofed node (e.g. a plaintext `localhost` under the §5.3 ladder) could serve `Enc(publicKey,
+   * malicious)` bytes that decrypt fine. Only the on-chain inclusion proof binds content to the
+   * chain. This reader therefore REQUIRES `verified === true` and throws `CONTENT_UNVERIFIED`
+   * otherwise — it never returns chain-unbacked bytes. A caller that deliberately wants the advisory
+   * (possibly-unverified) bytes uses {@link readResource}, which returns the `{ verified, decrypted }`
+   * flags instead of throwing.
+   *
+   * NOTE — behaviour change vs 0.4.4: `read`/`readText` now throw on unverified content (a deliberate
+   * secure default); the old advisory behaviour lives on in `readResource`. Still never a "not found"
+   * (presence is unknowable) — beyond a transport failure it throws only when content fails to verify.
    */
   async read(
     input: { urn: string; root?: string | null; salt?: string | null },
@@ -160,7 +237,7 @@ export class DigClient {
         { urn: input.urn },
       );
     }
-    return this.readResource(
+    const result = await this.readResource(
       {
         storeId: parsed.storeId,
         resourceKey: parsed.resourceKey,
@@ -169,9 +246,21 @@ export class DigClient {
       },
       opts,
     );
+    if (!result.verified) {
+      throw new DigSdkError(
+        "CONTENT_UNVERIFIED",
+        "served content did not verify against the on-chain root — refusing to return chain-unbacked bytes (use readResource to handle unverified content deliberately)",
+        { urn: input.urn, root: effRoot },
+      );
+    }
+    return result;
   }
 
-  /** As `read`, but decoding the plaintext to a UTF-8 string when it decrypts (else throws). */
+  /**
+   * As {@link read} (fail-closed: throws `CONTENT_UNVERIFIED` on unverified content), but decoding the
+   * verified plaintext to a UTF-8 string — throwing `DECRYPT_FAILED` when the bytes are chain-backed
+   * yet do not decrypt under this URN (wrong store/key/salt, or a verified decoy).
+   */
   async readText(
     input: { urn: string; root?: string | null; salt?: string | null },
     opts: ReadOptions = {},
@@ -188,8 +277,14 @@ export class DigClient {
   }
 
   /**
-   * Read by explicit (storeId, resourceKey, root, salt) rather than a URN string. The oblivious
-   * download primitive the URN read is built on.
+   * Read by explicit (storeId, resourceKey, root, salt) rather than a URN string — the oblivious
+   * download primitive the URN read is built on, and the ADVISORY escape hatch.
+   *
+   * Unlike the fail-closed {@link read}/{@link readText}, this NEVER throws on unverified or
+   * undecryptable content: it returns `{ bytes, verified, decrypted }` and leaves the trust decision
+   * to the caller. Use it ONLY when you deliberately handle unverified bytes (e.g. rendering a decoy,
+   * or inspecting content whose inclusion proof you check yourself). `verified === false` means the
+   * bytes are NOT bound to the on-chain root — treat them as untrusted.
    */
   async readResource(
     input: {
@@ -200,7 +295,7 @@ export class DigClient {
     },
     opts: ReadOptions = {},
   ): Promise<ReadResult> {
-    const rpc = opts.rpc ?? this.rpc;
+    const rpc = await this.endpoint(opts);
     const wasm = await this.wasm();
     const rk = wasm.retrievalKey(input.storeId, input.resourceKey);
     const { ciphertext, proof, chunkLens } = await this.fetchCiphertext(
@@ -264,7 +359,7 @@ export class DigClient {
     input: { launcherIds: string[]; did?: string | null },
     opts: ReadOptions = {},
   ): Promise<CollectionMeta> {
-    const rpc = opts.rpc ?? this.rpc;
+    const rpc = await this.endpoint(opts);
     const params: Record<string, unknown> = { launcher_ids: input.launcherIds };
     if (input.did) params.did = input.did;
     const r = await this.rpcCall<CollectionMeta>(
@@ -299,7 +394,7 @@ export class DigClient {
     input: { launcherIds: string[]; offset?: number; limit?: number },
     opts: ReadOptions = {},
   ): Promise<CollectionItemsPage> {
-    const rpc = opts.rpc ?? this.rpc;
+    const rpc = await this.endpoint(opts);
     const params: Record<string, unknown> = { launcher_ids: input.launcherIds };
     if (input.offset !== undefined) params.offset = input.offset;
     if (input.limit !== undefined) params.limit = input.limit;

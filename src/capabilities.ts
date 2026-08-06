@@ -8,6 +8,7 @@
 import { WALLET_METHODS, SIGN_METHODS, DEFAULT_CHAIN } from "./methods.js";
 import { DIG_CLIENT_WASM_SHA256 } from "./loader.js";
 import { DEFAULT_RPC } from "./dig-client.js";
+import { NODE_LADDER, type NodeCandidate } from "./node-resolver.js";
 import { DIG_SDK_ERROR_CODES, type DigSdkErrorCode } from "./errors.js";
 
 // Injected by tsup `define` ({ __SDK_VERSION__: JSON.stringify(pkg.version) }). The `declare`
@@ -44,13 +45,42 @@ export interface SdkCapabilities {
   readonly transports: readonly ("injected" | "walletconnect")[];
   /** The CAIP-2 chains supported (mainnet only — there is no testnet flow). */
   readonly chains: readonly string[];
-  /** The default dig RPC endpoint `DigClient` reads from. */
+  /**
+   * The public gateway endpoint (`https://rpc.dig.net`) — the §5.3 ladder's TERMINAL fallback, kept
+   * on this field for back-compat. It is NOT a privileged primary; see {@link nodeResolution} for
+   * the actual endpoint-resolution order a `DigClient` follows.
+   */
   readonly defaultRpc: string;
+  /** The CLAUDE.md §5.3 client→node endpoint-resolution ladder `DigClient` follows. */
+  readonly nodeResolution: NodeResolutionDescriptor;
   /** The SRI digest of the read-crypto wasm from @dignetwork/dig-capsule-wasm (fail-closed on mismatch). */
   readonly readCryptoWasmSha256: string;
   /** The stable error-code catalogue (UPPER_SNAKE) consumers can branch on. */
   readonly errorCodes: readonly DigSdkErrorCode[];
 }
+
+/**
+ * The machine-readable description of the CLAUDE.md §5.3 client→node resolution ladder: the ordered
+ * rungs a `DigClient` resolves its endpoint through, the env override, and which environments probe
+ * the local rungs. An agent can introspect the resolution policy without reading source.
+ */
+export interface NodeResolutionDescriptor {
+  /** The ordered ladder, local node first, public gateway terminal (each rung = { via, url, localOnly }). */
+  readonly ladder: readonly NodeCandidate[];
+  /** The env var that, when set, overrides the whole ladder. */
+  readonly envVar: string;
+  /**
+   * Where the LOCAL rungs (`dig.local`, `localhost`) are probed: `"node-only"` — a browser build
+   * skips them (mixed-content / cert constraints) and uses only explicit › env › gateway.
+   */
+  readonly localProbing: "node-only";
+}
+
+const NODE_RESOLUTION: NodeResolutionDescriptor = Object.freeze({
+  ladder: NODE_LADDER,
+  envVar: "DIG_NODE_URL",
+  localProbing: "node-only",
+});
 
 const MODULES: readonly ModuleDescriptor[] = Object.freeze([
   {
@@ -107,6 +137,7 @@ export function capabilities(): SdkCapabilities {
     transports: ["injected", "walletconnect"],
     chains: [DEFAULT_CHAIN],
     defaultRpc: DEFAULT_RPC,
+    nodeResolution: NODE_RESOLUTION,
     readCryptoWasmSha256: DIG_CLIENT_WASM_SHA256,
     errorCodes: Object.values(DIG_SDK_ERROR_CODES),
   };

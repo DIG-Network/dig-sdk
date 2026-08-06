@@ -201,6 +201,41 @@ JSON-RPC wire shapes MUST match dig-store's `dig-resolver`/`dig-client-wasm`, th
 the shared definitions in the ecosystem `SYSTEM.md` (→ "URN scheme", "content-read RPC"). This
 section DOCUMENTS them; an implementation MUST NOT diverge from `SYSTEM.md`.
 
+### 7.0 Node endpoint resolution (CLAUDE.md §5.3 ladder)
+
+`DigClient` MUST NOT hard-code `https://rpc.dig.net` as its primary/only endpoint. It resolves the
+dig node/RPC endpoint through the fixed §5.3 ladder, using the FIRST option that responds, and
+memoizes the choice for the client instance's lifetime:
+
+1. **Explicit** — `new DigClient({ rpc })`. When set it OVERRIDES the whole ladder (no probing). A
+   per-call `opts.rpc` likewise overrides for that call.
+2. **`DIG_NODE_URL`** — the environment override (read via `process.env` where present; absent in a
+   browser). Overrides the probed ladder (no probing).
+3. **`dig.local`** — the installed local node, PORTLESS HTTPS at `https://127.0.0.2:443`.
+4. **`localhost`** — the loopback node's PLAINTEXT HTTP listener at `http://localhost:9778` (never
+   TLS).
+5. **`https://rpc.dig.net`** — the public gateway, the TERMINAL fallback (an ordinary well-known
+   node, never privileged). Used when no earlier rung answers; it is not itself probed.
+
+Each local rung (3, 4) is probed with a cheap `GET ${url}/health` on a short timeout
+(`DEFAULT_PROBE_TIMEOUT_MS`); a rung that times out or errors MUST fall through to the next, never
+abort the ladder. Precedence order MUST be exactly: explicit › `DIG_NODE_URL` › `dig.local` ›
+`localhost` › gateway.
+
+**Environments.** In a **Node** process the full ladder is probed. In a **browser** page the LOCAL
+rungs (3, 4) are SKIPPED — a page served over `https://` cannot probe a plaintext-loopback
+(mixed content) nor a self-signed `https://127.0.0.2` (cert/CSP) — so a browser client resolves
+explicit › `DIG_NODE_URL` › gateway. A browser page that wants a local node passes it explicitly or
+relies on the DIG Browser / extension. Environment is auto-detected (`isBrowserEnv`) and overridable
+via `new DigClient({ isBrowser })`.
+
+`capabilities().nodeResolution` describes the ladder machine-readably (the ordered rungs, the
+`DIG_NODE_URL` env var, and that local probing is `"node-only"`). `capabilities().defaultRpc` remains
+`https://rpc.dig.net` — redocumented as the ladder's terminal fallback, NOT a privileged primary.
+
+**mTLS.** §5.3's node-class mTLS transport is out of scope for endpoint RESOLUTION; the transport
+stays the SDK's existing HTTPS `fetch`, gated on the gateway's mTLS endpoint existing.
+
 ### 7.1 URN scheme
 
 A DIG resource is addressed by a URN of the exact form:
@@ -269,11 +304,45 @@ resolved to its CURRENT on-chain state (current owner, royalty, CHIP-0007 metada
   `limit` is clamped to the server cap (200); `offset` defaults to 0.
 - Result: a `CollectionItemsPage` — `items` plus `next_offset` (null on the last page).
 
+> **KNOWN LIMITATION (endpoint-trusted collection metadata).** `dig.getCollection` /
+> `dig.listCollectionItems` return chain metadata (owner, royalty, DID, CHIP-0007 fields) that is
+> **ENDPOINT-TRUSTED**: there is currently NO inclusion proof binding these facts to the chain, so the
+> reader trusts whatever the resolved node reports. Under the §7.0 local-first ladder this means a
+> possibly-untrusted local node could return forged collection metadata. This is documented pending a
+> follow-up that adds a verifiable proof mechanism (tracked separately); until then, callers needing
+> chain-authoritative owner/royalty facts SHOULD confirm them against the chain independently. (Unlike
+> the content readers in §7.3.1, which ARE fail-closed on inclusion.)
+
+### 7.3.1 Content-read integrity — fail-closed default readers (HARD RULE)
+
+Decryption success alone does NOT prove chain origin: for a public (saltless) store the content key
+is `deriveKey(store_id, resource_key)`, derivable purely from the public URN, so ANY party (including
+an untrusted or spoofed node reached via the §7.0 ladder — e.g. the plaintext `localhost` rung) can
+serve `Enc(publicKey, arbitrary)` bytes that decrypt cleanly. ONLY `verifyInclusion(ciphertext,
+proof, root)` binds content to the on-chain root. Therefore:
+
+- **`read` and `readText` are FAIL-CLOSED**: they REQUIRE `verified === true` and MUST throw
+  `CONTENT_UNVERIFIED` otherwise — they never return chain-unbacked bytes. `readText` additionally
+  throws `DECRYPT_FAILED` when verified content does not decrypt under the URN (a verified decoy /
+  wrong key/salt).
+- **`readResource` is the ADVISORY escape hatch**: it returns `{ bytes, verified, decrypted }` and
+  never throws on unverified/undecryptable content, leaving the trust decision to the caller. Callers
+  that deliberately handle unverified bytes (e.g. rendering a decoy, or checking the proof themselves)
+  use it; `verified === false` there means the bytes are NOT chain-bound and MUST be treated as
+  untrusted.
+
+This is a deliberate secure default (a behaviour change vs 0.4.4, where the convenience readers
+returned unverified bytes with an advisory flag).
+
 ### 7.4 Security properties
 
 - **Blind host / no presence oracle.** The trust ROOT is always caller-supplied (resolved from the
   chain); the host is never the trust anchor. Because the host returns indistinguishable ciphertext
   for any retrieval key, resource presence is UNKNOWABLE from a read.
+- **Fail-closed content reads.** `read`/`readText` refuse content that fails inclusion against the
+  caller-supplied root (`CONTENT_UNVERIFIED`); `readResource` is the advisory API (§7.3.1). Decryption
+  is not authentication — only the inclusion proof binds bytes to the chain — so an untrusted node
+  (reachable under the §7.0 ladder) cannot feed attacker plaintext through the default readers.
 - **wasm integrity is per-load-path** (from #1156 finding 2 — mirrors `src/loader.ts` +
   `src/wasm.ts`):
   - **Byte-level SRI (fail-closed)** on the Node path and on any caller-supplied
