@@ -206,10 +206,22 @@ export class DigClient {
   }
 
   /**
-   * Fetch + verify + decrypt one resource by URN. `root` is the on-chain generation root to verify
-   * against (resolved by the caller from the chain); when omitted, the root embedded in the URN is
-   * used. Returns the bytes plus advisory `verified`/`decrypted` flags. NEVER throws "not found"
-   * (presence is unknowable) — it throws only on a transport failure.
+   * Fetch + verify + decrypt one resource by URN — the FAIL-CLOSED default reader. `root` is the
+   * on-chain generation root to verify against (resolved by the caller from the chain); when omitted,
+   * the root embedded in the URN is used.
+   *
+   * INTEGRITY (why this throws). Decryption success alone proves only "knows a public key": for a
+   * public (saltless) store the content key is derivable from the public URN, so an untrusted or
+   * spoofed node (e.g. a plaintext `localhost` under the §5.3 ladder) could serve `Enc(publicKey,
+   * malicious)` bytes that decrypt fine. Only the on-chain inclusion proof binds content to the
+   * chain. This reader therefore REQUIRES `verified === true` and throws `CONTENT_UNVERIFIED`
+   * otherwise — it never returns chain-unbacked bytes. A caller that deliberately wants the advisory
+   * (possibly-unverified) bytes uses {@link readResource}, which returns the `{ verified, decrypted }`
+   * flags instead of throwing.
+   *
+   * NOTE — behaviour change vs 0.4.4: `read`/`readText` now throw on unverified content (a deliberate
+   * secure default); the old advisory behaviour lives on in `readResource`. Still never a "not found"
+   * (presence is unknowable) — beyond a transport failure it throws only when content fails to verify.
    */
   async read(
     input: { urn: string; root?: string | null; salt?: string | null },
@@ -225,7 +237,7 @@ export class DigClient {
         { urn: input.urn },
       );
     }
-    return this.readResource(
+    const result = await this.readResource(
       {
         storeId: parsed.storeId,
         resourceKey: parsed.resourceKey,
@@ -234,9 +246,21 @@ export class DigClient {
       },
       opts,
     );
+    if (!result.verified) {
+      throw new DigSdkError(
+        "CONTENT_UNVERIFIED",
+        "served content did not verify against the on-chain root — refusing to return chain-unbacked bytes (use readResource to handle unverified content deliberately)",
+        { urn: input.urn, root: effRoot },
+      );
+    }
+    return result;
   }
 
-  /** As `read`, but decoding the plaintext to a UTF-8 string when it decrypts (else throws). */
+  /**
+   * As {@link read} (fail-closed: throws `CONTENT_UNVERIFIED` on unverified content), but decoding the
+   * verified plaintext to a UTF-8 string — throwing `DECRYPT_FAILED` when the bytes are chain-backed
+   * yet do not decrypt under this URN (wrong store/key/salt, or a verified decoy).
+   */
   async readText(
     input: { urn: string; root?: string | null; salt?: string | null },
     opts: ReadOptions = {},
@@ -253,8 +277,14 @@ export class DigClient {
   }
 
   /**
-   * Read by explicit (storeId, resourceKey, root, salt) rather than a URN string. The oblivious
-   * download primitive the URN read is built on.
+   * Read by explicit (storeId, resourceKey, root, salt) rather than a URN string — the oblivious
+   * download primitive the URN read is built on, and the ADVISORY escape hatch.
+   *
+   * Unlike the fail-closed {@link read}/{@link readText}, this NEVER throws on unverified or
+   * undecryptable content: it returns `{ bytes, verified, decrypted }` and leaves the trust decision
+   * to the caller. Use it ONLY when you deliberately handle unverified bytes (e.g. rendering a decoy,
+   * or inspecting content whose inclusion proof you check yourself). `verified === false` means the
+   * bytes are NOT bound to the on-chain root — treat them as untrusted.
    */
   async readResource(
     input: {

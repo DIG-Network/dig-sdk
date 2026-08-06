@@ -304,11 +304,45 @@ resolved to its CURRENT on-chain state (current owner, royalty, CHIP-0007 metada
   `limit` is clamped to the server cap (200); `offset` defaults to 0.
 - Result: a `CollectionItemsPage` — `items` plus `next_offset` (null on the last page).
 
+> **KNOWN LIMITATION (endpoint-trusted collection metadata).** `dig.getCollection` /
+> `dig.listCollectionItems` return chain metadata (owner, royalty, DID, CHIP-0007 fields) that is
+> **ENDPOINT-TRUSTED**: there is currently NO inclusion proof binding these facts to the chain, so the
+> reader trusts whatever the resolved node reports. Under the §7.0 local-first ladder this means a
+> possibly-untrusted local node could return forged collection metadata. This is documented pending a
+> follow-up that adds a verifiable proof mechanism (tracked separately); until then, callers needing
+> chain-authoritative owner/royalty facts SHOULD confirm them against the chain independently. (Unlike
+> the content readers in §7.3.1, which ARE fail-closed on inclusion.)
+
+### 7.3.1 Content-read integrity — fail-closed default readers (HARD RULE)
+
+Decryption success alone does NOT prove chain origin: for a public (saltless) store the content key
+is `deriveKey(store_id, resource_key)`, derivable purely from the public URN, so ANY party (including
+an untrusted or spoofed node reached via the §7.0 ladder — e.g. the plaintext `localhost` rung) can
+serve `Enc(publicKey, arbitrary)` bytes that decrypt cleanly. ONLY `verifyInclusion(ciphertext,
+proof, root)` binds content to the on-chain root. Therefore:
+
+- **`read` and `readText` are FAIL-CLOSED**: they REQUIRE `verified === true` and MUST throw
+  `CONTENT_UNVERIFIED` otherwise — they never return chain-unbacked bytes. `readText` additionally
+  throws `DECRYPT_FAILED` when verified content does not decrypt under the URN (a verified decoy /
+  wrong key/salt).
+- **`readResource` is the ADVISORY escape hatch**: it returns `{ bytes, verified, decrypted }` and
+  never throws on unverified/undecryptable content, leaving the trust decision to the caller. Callers
+  that deliberately handle unverified bytes (e.g. rendering a decoy, or checking the proof themselves)
+  use it; `verified === false` there means the bytes are NOT chain-bound and MUST be treated as
+  untrusted.
+
+This is a deliberate secure default (a behaviour change vs 0.4.4, where the convenience readers
+returned unverified bytes with an advisory flag).
+
 ### 7.4 Security properties
 
 - **Blind host / no presence oracle.** The trust ROOT is always caller-supplied (resolved from the
   chain); the host is never the trust anchor. Because the host returns indistinguishable ciphertext
   for any retrieval key, resource presence is UNKNOWABLE from a read.
+- **Fail-closed content reads.** `read`/`readText` refuse content that fails inclusion against the
+  caller-supplied root (`CONTENT_UNVERIFIED`); `readResource` is the advisory API (§7.3.1). Decryption
+  is not authentication — only the inclusion proof binds bytes to the chain — so an untrusted node
+  (reachable under the §7.0 ladder) cannot feed attacker plaintext through the default readers.
 - **wasm integrity is per-load-path** (from #1156 finding 2 — mirrors `src/loader.ts` +
   `src/wasm.ts`):
   - **Byte-level SRI (fail-closed)** on the Node path and on any caller-supplied

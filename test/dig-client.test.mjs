@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DigClient,
+  DigSdkError,
   loadDigClientWasm,
   DIG_CLIENT_WASM_SHA256,
 } from "../dist/index.js";
@@ -103,21 +104,16 @@ test("DigClient.read requires an on-chain root", async () => {
   );
 });
 
-test("DigClient.read fetches by retrieval key, verifies, and decrypts (mock RPC)", async () => {
-  const wasm = await loadDigClientWasm();
-  const root = "cd".repeat(32);
-  const plaintext = new TextEncoder().encode("served + decrypted via mock RPC");
-  const ciphertext = wasm.encryptResource(STORE, "index.html", plaintext);
-  const expectedRk = wasm.retrievalKey(STORE, "index.html");
+// A mock RPC serving a resource's ciphertext as a single complete chunk, addressed by retrieval key.
+// `proof` is the inclusion proof it returns ("" = a bogus/absent proof → verifyInclusion is false).
+function mockCiphertextRpc(ciphertext, { proof = "" } = {}) {
   const b64 = Buffer.from(ciphertext).toString("base64");
-
-  // Mock fetch: assert the request is addressed by the retrieval key, return the ciphertext as a
-  // single complete chunk. (verifyInclusion will be false here — no real proof — which the
-  // oblivious model treats as advisory; decryption still succeeds under the URN key.)
-  let sawRetrievalKey = null;
-  const mockFetch = async (_url, init) => {
+  const seen = {};
+  const fetchImpl = async (_url, init) => {
+    // Health probes (GET, no body) fall through so resolution reaches the mocked endpoint.
+    if (!init || typeof init.body !== "string") return { ok: false };
     const body = JSON.parse(init.body);
-    sawRetrievalKey = body.params.retrieval_key;
+    seen.retrievalKey = body.params.retrieval_key;
     return {
       ok: true,
       async json() {
@@ -128,24 +124,66 @@ test("DigClient.read fetches by retrieval key, verifies, and decrypts (mock RPC)
             total_length: ciphertext.length,
             offset: 0,
             ciphertext: b64,
-            inclusion_proof: "",
+            inclusion_proof: proof,
             complete: true,
           },
         };
       },
     };
   };
+  return { fetchImpl, seen };
+}
 
-  const dig = new DigClient({ fetch: mockFetch });
-  const res = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
-  assert.equal(sawRetrievalKey, expectedRk); // addressed by the retrieval key, never the URN
-  assert.equal(res.decrypted, true);
-  assert.deepEqual(res.bytes, plaintext);
-  assert.equal(res.root, root);
+test("readResource (advisory) fetches by retrieval key + decrypts without requiring verification", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32);
+  const plaintext = new TextEncoder().encode("served + decrypted via mock RPC");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", plaintext);
+  const expectedRk = wasm.retrievalKey(STORE, "index.html");
+  const { fetchImpl, seen } = mockCiphertextRpc(ciphertext); // bogus proof → verified=false
 
-  const text = await dig.readText({
-    urn: `urn:dig:chia:${STORE}/index.html`,
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.readResource({
+    storeId: STORE,
+    resourceKey: "index.html",
     root,
   });
-  assert.equal(text, "served + decrypted via mock RPC");
+  assert.equal(seen.retrievalKey, expectedRk); // addressed by the retrieval key, never the URN
+  assert.equal(res.decrypted, true); // decrypts under the public URN key…
+  assert.equal(res.verified, false); // …but is NOT bound to the chain (advisory API returns it)
+  assert.deepEqual(res.bytes, plaintext);
+  assert.equal(res.root, root);
+});
+
+// REGRESSION (#2134 dual-gate finding): the §5.3 ladder makes an UNAUTHENTICATED local node the
+// default endpoint for Node consumers, so a spoofed node can serve Enc(publicKey, malicious) that
+// DECRYPTS (decrypted=true) but FAILS inclusion (verified=false). The fail-closed default readers
+// MUST refuse to return those chain-unbacked bytes.
+test("read throws on unverified content (fail-closed) — never returns chain-unbacked bytes", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32);
+  const malicious = new TextEncoder().encode("attacker-controlled plaintext");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", malicious);
+  const { fetchImpl } = mockCiphertextRpc(ciphertext); // decrypts, but verified=false
+
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "CONTENT_UNVERIFIED",
+    "read must fail-closed on unverified content",
+  );
+});
+
+test("readText throws CONTENT_UNVERIFIED on unverified content (fail-closed)", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32);
+  const malicious = new TextEncoder().encode("attacker-controlled plaintext");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", malicious);
+  const { fetchImpl } = mockCiphertextRpc(ciphertext);
+
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.readText({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "CONTENT_UNVERIFIED",
+  );
 });
