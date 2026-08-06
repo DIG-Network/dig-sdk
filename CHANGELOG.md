@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.0] - 2026-08-06
+
+### Bug Fixes
+- **dig-sdk:** Implement the §5.3 node-resolution ladder (#2134)
+
 ## [0.4.4] - 2026-08-06
 
 ### Chores
