@@ -62,9 +62,18 @@ test("capabilities() returns the machine-readable SDK surface", () => {
   assert.deepEqual([...cap.transports].sort(), ["injected", "walletconnect"]);
   assert.deepEqual(cap.chains, ["chia:mainnet"]);
 
-  // Read path: default RPC + the SRI-pinned read-crypto wasm digest.
+  // Read path: default RPC (the §5.3 terminal gateway) + the SRI-pinned read-crypto wasm digest.
   assert.equal(cap.defaultRpc, "https://rpc.dig.net");
   assert.match(cap.readCryptoWasmSha256, /^[0-9a-f]{64}$/);
+
+  // §5.3 node-resolution ladder is described machine-readably: fixed rung order + env override.
+  assert.deepEqual(
+    cap.nodeResolution.ladder.map((r) => r.via),
+    ["dig.local", "localhost", "gateway"],
+  );
+  assert.equal(cap.nodeResolution.ladder.at(-1).url, "https://rpc.dig.net");
+  assert.equal(cap.nodeResolution.envVar, "DIG_NODE_URL");
+  assert.equal(cap.nodeResolution.localProbing, "node-only");
 
   // Error catalogue is present and non-empty.
   assert.ok(Array.isArray(cap.errorCodes));

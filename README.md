@@ -37,7 +37,7 @@ npm i @walletconnect/sign-client
 ```ts
 import { DigClient } from "@dignetwork/dig-sdk";
 
-const dig = new DigClient(); // defaults to https://rpc.dig.net
+const dig = new DigClient(); // resolves your node via the §5.3 ladder (see below)
 const { bytes, decrypted, verified } = await dig.read({
   urn: "urn:dig:chia:<storeId>/index.html", // the resource to read
   root: "<onchain-root-hex>", // the trust anchor (from the chain)
@@ -53,6 +53,24 @@ decoded string (or throws if it didn't decrypt).
 
 A private store adds a salt — either inline in the URN (`…/secret.txt?salt=<hex>`) or as
 `dig.read({ urn, root, salt })`.
+
+### Which node does it read from? (the §5.3 ladder)
+
+`DigClient` prefers your OWN running node and falls back to the public gateway only as a last
+resort — it never hard-codes `rpc.dig.net` as the primary endpoint. It resolves the endpoint once
+(memoized per instance), using the first that responds:
+
+1. `new DigClient({ rpc })` — an explicit endpoint (overrides everything, no probing).
+2. `DIG_NODE_URL` — the environment override (Node only; no probing).
+3. `dig.local` — the installed local node (`https://127.0.0.2:443`).
+4. `localhost` — a loopback node (`http://localhost:9778`).
+5. `https://rpc.dig.net` — the public gateway, the terminal fallback.
+
+Each local rung is health-probed on a short timeout and falls through on no answer. **In a browser**
+the local rungs are skipped (a page can't probe a plaintext-loopback or self-signed-localhost node) —
+so the browser build resolves explicit › `DIG_NODE_URL` › gateway; pass `{ rpc }` to point a page at
+a specific node. Call `await dig.resolveEndpoint()` to see which node was chosen (`{ url, via }`), or
+`capabilities().nodeResolution` for the machine-readable ladder.
 
 ## Connect a wallet + sign
 
@@ -216,18 +234,19 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 
 ### `DigClient`
 
-| Member                                                             | Description                                                                                                                               |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `new DigClient({ rpc?, fetch? })`                                  | RPC defaults to `https://rpc.dig.net`.                                                                                                    |
-| `read({ urn, root?, salt? }, opts?)`                               | Fetch + verify + decrypt → `{ bytes, verified, decrypted, … }`.                                                                           |
-| `readText({ urn, root?, salt? }, opts?)`                           | As `read`, decoded to a UTF-8 string (throws if not decrypted).                                                                           |
-| `readResource({ storeId, resourceKey, root, salt? }, opts?)`       | Read by explicit parts instead of a URN.                                                                                                  |
-| `deriveUrnKeys({ urn, salt? })`                                    | The root-independent `{ retrievalKey, decryptionKey }` for a URN.                                                                         |
-| `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)`    | The individual derivations.                                                                                                               |
-| `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)` | Lower-level read-crypto.                                                                                                                  |
-| `getCollection({ launcherIds, did? }, opts?)`                      | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`.                                  |
-| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)`     | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
-| `wasm()`                                                           | The raw read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …); integrity per the loader path.                                |
+| Member                                                                     | Description                                                                                                                               |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `new DigClient({ rpc?, fetch?, nodeProbe?, probeTimeoutMs?, isBrowser? })` | Resolves the node endpoint via the §5.3 ladder (below). An explicit `rpc` overrides it.                                                   |
+| `resolveEndpoint()`                                                        | The resolved `{ url, via }` (memoized per instance) — which node was chosen and why.                                                      |
+| `read({ urn, root?, salt? }, opts?)`                                       | Fetch + verify + decrypt → `{ bytes, verified, decrypted, … }`.                                                                           |
+| `readText({ urn, root?, salt? }, opts?)`                                   | As `read`, decoded to a UTF-8 string (throws if not decrypted).                                                                           |
+| `readResource({ storeId, resourceKey, root, salt? }, opts?)`               | Read by explicit parts instead of a URN.                                                                                                  |
+| `deriveUrnKeys({ urn, salt? })`                                            | The root-independent `{ retrievalKey, decryptionKey }` for a URN.                                                                         |
+| `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)`            | The individual derivations.                                                                                                               |
+| `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)`         | Lower-level read-crypto.                                                                                                                  |
+| `getCollection({ launcherIds, did? }, opts?)`                              | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`.                                  |
+| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)`             | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
+| `wasm()`                                                                   | The raw read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …); integrity per the loader path.                                |
 
 ### `Paywall`
 
@@ -378,7 +397,8 @@ capabilities(); // (alias: describe()) the machine-readable surface ↓
 | `signMethods`          | `string[]`                          | Message-signing methods, in preference order.                                                            |
 | `transports`           | `("injected" \| "walletconnect")[]` | The wallet transports.                                                                                   |
 | `chains`               | `string[]`                          | CAIP-2 chains — `["chia:mainnet"]` (no testnet flow).                                                    |
-| `defaultRpc`           | `string`                            | The default dig RPC endpoint `DigClient` reads from.                                                     |
+| `defaultRpc`           | `string`                            | The public gateway (`https://rpc.dig.net`) — the §5.3 ladder's terminal fallback, not a primary.         |
+| `nodeResolution`       | `NodeResolutionDescriptor`          | The §5.3 client→node ladder: ordered rungs, the `DIG_NODE_URL` env var, and `localProbing: "node-only"`. |
 | `readCryptoWasmSha256` | `string`                            | SRI digest of the `@dignetwork/dig-capsule-wasm` read-crypto wasm (fail-closed on mismatch).             |
 | `errorCodes`           | `string[]`                          | The full stable error-code catalogue (see below).                                                        |
 

@@ -53,9 +53,14 @@ export interface WalletSession {
   address?: string | null;
 }
 
-/** Options for `DigClient.read*` calls — chiefly which dig RPC endpoint to use. */
+/** Options for `DigClient.read*` calls — chiefly which dig node/RPC endpoint to use. */
 export interface ReadOptions {
-  /** dig RPC endpoint. Defaults to the public `https://rpc.dig.net`. */
+  /**
+   * A per-call dig node/RPC endpoint override. When omitted the call uses the client's endpoint,
+   * resolved once through the CLAUDE.md §5.3 ladder (explicit `rpc` › `DIG_NODE_URL` › `dig.local`
+   * › `localhost` › the `https://rpc.dig.net` gateway) — the user's local node is preferred and the
+   * public gateway is only the terminal fallback.
+   */
   rpc?: string;
 }
 
