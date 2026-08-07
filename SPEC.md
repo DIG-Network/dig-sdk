@@ -313,36 +313,57 @@ resolved to its CURRENT on-chain state (current owner, royalty, CHIP-0007 metada
 > chain-authoritative owner/royalty facts SHOULD confirm them against the chain independently. (Unlike
 > the content readers in §7.3.1, which ARE fail-closed on inclusion.)
 
-### 7.3.1 Content-read integrity — fail-closed default readers (HARD RULE)
+### 7.3.1 Content-read integrity — oblivious primitives + secure-by-default siblings (HARD RULE)
 
 Decryption success alone does NOT prove chain origin: for a public (saltless) store the content key
 is `deriveKey(store_id, resource_key)`, derivable purely from the public URN, so ANY party (including
 an untrusted or spoofed node reached via the §7.0 ladder — e.g. the plaintext `localhost` rung) can
 serve `Enc(publicKey, arbitrary)` bytes that decrypt cleanly. ONLY `verifyInclusion(ciphertext,
-proof, root)` binds content to the on-chain root. Therefore:
+proof, root)` binds content to the on-chain root. The read surface therefore splits into oblivious
+primitives and secure-by-default siblings:
 
-- **`read` and `readText` are FAIL-CLOSED**: they REQUIRE `verified === true` and MUST throw
-  `CONTENT_UNVERIFIED` otherwise — they never return chain-unbacked bytes. `readText` additionally
-  throws `DECRYPT_FAILED` when verified content does not decrypt under the URN (a verified decoy /
-  wrong key/salt).
-- **`readResource` is the ADVISORY escape hatch**: it returns `{ bytes, verified, decrypted }` and
-  never throws on unverified/undecryptable content, leaving the trust decision to the caller. Callers
-  that deliberately handle unverified bytes (e.g. rendering a decoy, or checking the proof themselves)
-  use it; `verified === false` there means the bytes are NOT chain-bound and MUST be treated as
-  untrusted.
+- **`read` and `readResource` are OBLIVIOUS primitives**: they return `{ bytes, verified, decrypted }`
+  and MUST NOT throw on unverified/undecryptable content (beyond a transport failure, and
+  `ROOT_REQUIRED` when no root is supplied/derivable). `decrypted === false` returns the raw served
+  ciphertext; `verified === false` means the bytes are NOT chain-bound. They are the deliberate blind
+  reads — a decoy is just opaque bytes, so presence stays unknowable — and callers that handle
+  unverified bytes themselves (a decoy, self-checked inclusion) use them.
+- **`readVerified` and `readText` are SECURE-BY-DEFAULT and MUST be used to RENDER or SERVE bytes.**
+  They fail closed:
+  - MUST throw `DECRYPT_FAILED` when the served bytes do not decrypt+authenticate under the URN.
+  - MUST throw `INCLUSION_UNVERIFIED` when the effective root is **PINNED** (`rootIsPinned(root)`)
+    AND `verified === false`; they never return chain-unbacked bytes to a renderer.
+  - `rootIsPinned` MUST be **fail-closed**: a root is UNPINNED only when its canonical form (trimmed,
+    lowercased, `0x` prefix stripped) is one of the sentinels `""` or `latest`, or the root is
+    absent. Every other value — including any rendering the wasm verifier accepts, and any value it
+    would reject — MUST read as PINNED and be gated. The predicate's accepted domain MUST NOT be
+    narrower than the verifier's: a root that verifies on an honest node but reads as unpinned
+    disables the gate silently, whereas over-recognising can only produce a loud
+    `INCLUSION_UNVERIFIED`. (This is strictly stronger than hub.dig.net's `/^[0-9a-f]{64}$/i`, which
+    gates the canonical and uppercase forms only; every root the hub gates, the SDK gates.)
+  - `read` MUST canonicalise the effective root once, before the predicate, the RPC parameter and
+    the verifier see it, so no two layers can disagree about what the root is.
+  - **Blind-model exception**: when the effective root is UNPINNED, inclusion cannot be proven in the
+    oblivious model, so it is ADVISORY — the readers gate on decryption only and MUST NOT throw
+    `INCLUSION_UNVERIFIED`. The returned result still carries `verified` for the caller's inspection.
+  - `readText` returns the decoded UTF-8 string of the `readVerified` result.
 
-This is a deliberate secure default (a behaviour change vs 0.4.4, where the convenience readers
-returned unverified bytes with an advisory flag).
+The unpinned exception applies ONLY to the inclusion gate; the decrypt gate is unconditional. A
+renderer MUST NOT fall back to the oblivious primitives to bypass these gates. (`CONTENT_UNVERIFIED`
+is retained in the taxonomy for back-compat but no path throws it; `INCLUSION_UNVERIFIED` supersedes
+it.)
 
 ### 7.4 Security properties
 
 - **Blind host / no presence oracle.** The trust ROOT is always caller-supplied (resolved from the
   chain); the host is never the trust anchor. Because the host returns indistinguishable ciphertext
   for any retrieval key, resource presence is UNKNOWABLE from a read.
-- **Fail-closed content reads.** `read`/`readText` refuse content that fails inclusion against the
-  caller-supplied root (`CONTENT_UNVERIFIED`); `readResource` is the advisory API (§7.3.1). Decryption
-  is not authentication — only the inclusion proof binds bytes to the chain — so an untrusted node
-  (reachable under the §7.0 ladder) cannot feed attacker plaintext through the default readers.
+- **Secure-by-default content reads.** `readVerified`/`readText` refuse content that fails inclusion
+  against a PINNED caller-supplied root (`INCLUSION_UNVERIFIED`) and content that does not decrypt
+  (`DECRYPT_FAILED`); `read`/`readResource` are the oblivious primitives (§7.3.1). Decryption is not
+  authentication — only the inclusion proof binds bytes to the chain — so an untrusted node
+  (reachable under the §7.0 ladder) cannot feed attacker plaintext through a renderer that uses the
+  secure readers under a pinned root.
 - **wasm integrity is per-load-path** (from #1156 finding 2 — mirrors `src/loader.ts` +
   `src/wasm.ts`):
   - **Byte-level SRI (fail-closed)** on the Node path and on any caller-supplied

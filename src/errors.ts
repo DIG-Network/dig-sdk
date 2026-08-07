@@ -33,11 +33,22 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
   /** The resource did not decrypt+authenticate under this URN (wrong key/salt, or a decoy). */
   DECRYPT_FAILED: "DECRYPT_FAILED",
   /**
-   * The served content did not verify against the on-chain root (its inclusion proof failed). The
-   * fail-closed default readers (`read`/`readText`) throw this rather than return chain-unbacked
-   * bytes — decryption success alone proves only "knows a public key", NOT chain origin, so an
-   * untrusted/spoofed node could otherwise serve attacker plaintext. Callers that deliberately want
-   * the advisory bytes use `readResource` (which returns `{ verified, decrypted }`).
+   * The served content did not verify against a PINNED on-chain root — its inclusion proof failed.
+   * The secure-by-default readers (`readVerified`/`readText`) throw this when the effective root is
+   * pinned (anything but an explicit unpinned sentinel) and `verified === false`, rather than return
+   * chain-unbacked bytes: decryption success alone proves only "knows a public key", NOT chain
+   * origin, so an untrusted/spoofed node (e.g. a plaintext `localhost` under the §5.3 ladder) could
+   * otherwise serve attacker plaintext. Under an UNPINNED / "latest" root inclusion cannot be
+   * checked in the blind model, so it is advisory and this is NOT thrown (the blind-model exception).
+   * Callers that deliberately want the raw advisory bytes use the oblivious `read`/`readResource`
+   * (which return `{ verified, decrypted }` and never throw on unverified content).
+   */
+  INCLUSION_UNVERIFIED: "INCLUSION_UNVERIFIED",
+  /**
+   * DEPRECATED (retained for back-compat). The old blanket "unverified content" code the pre-#2262
+   * fail-closed `read`/`readText` threw for ANY `verified === false`. The nuanced replacement is
+   * `INCLUSION_UNVERIFIED` (thrown only under a PINNED root). No SDK code path throws this anymore;
+   * kept in the catalogue so existing `err.code === "CONTENT_UNVERIFIED"` branches still type-check.
    */
   CONTENT_UNVERIFIED: "CONTENT_UNVERIFIED",
   /** The dig RPC could not be reached (network/transport failure). */

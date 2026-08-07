@@ -6,6 +6,15 @@ import { DigClient } from "@dignetwork/dig-sdk";
 
 export async function readContent(): Promise<void> {
   const dig = new DigClient(); // defaults to https://rpc.dig.net
+
+  // Rendering/serving? Use the secure-by-default readers (fail closed on decrypt/inclusion failure).
+  const text0 = await dig.readVerified({
+    urn: "urn:dig:chia:<storeId>/index.html",
+    root: "<onchain-root-hex>",
+  });
+  console.log(new TextDecoder().decode(text0.bytes));
+
+  // The oblivious primitive: advisory flags, never throws on unverified/undecryptable content.
   const { bytes, decrypted, verified } = await dig.read({
     urn: "urn:dig:chia:<storeId>/index.html",
     root: "<onchain-root-hex>",

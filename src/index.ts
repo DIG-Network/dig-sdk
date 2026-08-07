@@ -48,7 +48,12 @@ export {
 } from "./paywall.js";
 
 // ---- Read-crypto (DigClient) ----
-export { DigClient, DEFAULT_RPC, type DigClientOptions } from "./dig-client.js";
+export {
+  DigClient,
+  DEFAULT_RPC,
+  rootIsPinned,
+  type DigClientOptions,
+} from "./dig-client.js";
 
 // ---- Client → node endpoint resolution (CLAUDE.md §5.3 ladder) ----
 export {
