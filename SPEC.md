@@ -331,13 +331,21 @@ primitives and secure-by-default siblings:
 - **`readVerified` and `readText` are SECURE-BY-DEFAULT and MUST be used to RENDER or SERVE bytes.**
   They fail closed:
   - MUST throw `DECRYPT_FAILED` when the served bytes do not decrypt+authenticate under the URN.
-  - MUST throw `INCLUSION_UNVERIFIED` when the effective root is **PINNED** — a concrete lowercase
-    64-hex generation root (`rootIsPinned(root)`, mirroring hub.dig.net) — AND `verified === false`;
-    they never return chain-unbacked bytes to a renderer.
-  - **Blind-model exception**: when the effective root is UNPINNED (a `latest` sentinel or otherwise
-    not 64-hex), inclusion cannot be proven in the oblivious model, so it is ADVISORY — the readers
-    gate on decryption only and MUST NOT throw `INCLUSION_UNVERIFIED`. The returned result still
-    carries `verified` for the caller's inspection.
+  - MUST throw `INCLUSION_UNVERIFIED` when the effective root is **PINNED** (`rootIsPinned(root)`)
+    AND `verified === false`; they never return chain-unbacked bytes to a renderer.
+  - `rootIsPinned` MUST be **fail-closed**: a root is UNPINNED only when its canonical form (trimmed,
+    lowercased, `0x` prefix stripped) is one of the sentinels `""` or `latest`, or the root is
+    absent. Every other value — including any rendering the wasm verifier accepts, and any value it
+    would reject — MUST read as PINNED and be gated. The predicate's accepted domain MUST NOT be
+    narrower than the verifier's: a root that verifies on an honest node but reads as unpinned
+    disables the gate silently, whereas over-recognising can only produce a loud
+    `INCLUSION_UNVERIFIED`. (This is strictly stronger than hub.dig.net's `/^[0-9a-f]{64}$/i`, which
+    gates the canonical and uppercase forms only; every root the hub gates, the SDK gates.)
+  - `read` MUST canonicalise the effective root once, before the predicate, the RPC parameter and
+    the verifier see it, so no two layers can disagree about what the root is.
+  - **Blind-model exception**: when the effective root is UNPINNED, inclusion cannot be proven in the
+    oblivious model, so it is ADVISORY — the readers gate on decryption only and MUST NOT throw
+    `INCLUSION_UNVERIFIED`. The returned result still carries `verified` for the caller's inspection.
   - `readText` returns the decoded UTF-8 string of the `readVerified` result.
 
 The unpinned exception applies ONLY to the inclusion gate; the decrypt gate is unconditional. A

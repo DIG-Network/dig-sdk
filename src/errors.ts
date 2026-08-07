@@ -35,7 +35,7 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
   /**
    * The served content did not verify against a PINNED on-chain root — its inclusion proof failed.
    * The secure-by-default readers (`readVerified`/`readText`) throw this when the effective root is
-   * pinned (a concrete 64-hex generation root) and `verified === false`, rather than return
+   * pinned (anything but an explicit unpinned sentinel) and `verified === false`, rather than return
    * chain-unbacked bytes: decryption success alone proves only "knows a public key", NOT chain
    * origin, so an untrusted/spoofed node (e.g. a plaintext `localhost` under the §5.3 ladder) could
    * otherwise serve attacker plaintext. Under an UNPINNED / "latest" root inclusion cannot be

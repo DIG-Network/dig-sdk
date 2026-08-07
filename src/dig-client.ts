@@ -19,7 +19,7 @@
 // SECURE-BY-DEFAULT siblings. Anything that RENDERS or SERVES read bytes must fail closed, so the
 // oblivious primitives have fail-closed companions: `readVerified` (and the render-class `readText`)
 // throw `DECRYPT_FAILED` on undecryptable bytes and `INCLUSION_UNVERIFIED` when the bytes are read
-// under a PINNED root (a concrete 64-hex generation root via {@link rootIsPinned}) yet fail their
+// under a PINNED root (anything but an explicit unpinned sentinel — see {@link rootIsPinned}) yet fail their
 // on-chain inclusion proof — never returning chain-unbacked bytes to a renderer. Under an UNPINNED
 // / "latest" root inclusion cannot be proven in the blind model, so it stays advisory (the
 // blind-model exception): the secure readers gate on decryption only. Renderers use `readVerified` /
@@ -239,7 +239,9 @@ export class DigClient {
   ): Promise<ReadResult> {
     const parsed = parseUrn(input.urn);
     const effSalt = input.salt ?? parsed.salt ?? null;
-    const effRoot = input.root ?? parsed.root ?? null;
+    // Canonicalise ONCE here: the predicate, the RPC parameter and the wasm verifier downstream all
+    // receive this single form, so they can never disagree about what the caller's root is.
+    const effRoot = canonicalizeRoot(input.root ?? parsed.root ?? "");
     if (!effRoot) {
       throw new DigSdkError(
         "ROOT_REQUIRED",
@@ -267,8 +269,8 @@ export class DigClient {
    * Trust gate (why it throws):
    * - `DECRYPT_FAILED` when the served bytes do not decrypt+authenticate under this URN (wrong
    *   store/key/salt, or a decoy) — a renderer must never show undecryptable bytes.
-   * - `INCLUSION_UNVERIFIED` when the effective root is PINNED (a concrete 64-hex generation root,
-   *   {@link rootIsPinned}) and the inclusion proof did not verify: decryption alone proves only
+   * - `INCLUSION_UNVERIFIED` when the effective root is PINNED — anything but an explicit unpinned
+   *   sentinel, {@link rootIsPinned} — and the inclusion proof did not verify: decryption alone proves only
    *   "knows a public key", so a spoofed node could serve `Enc(publicKey, malicious)` that decrypts
    *   fine — only the on-chain proof binds content to the chain.
    * - BLIND-MODEL EXCEPTION: under an UNPINNED / "latest" root inclusion cannot be proven in the
@@ -316,8 +318,8 @@ export class DigClient {
    * Read by explicit (storeId, resourceKey, root, salt) rather than a URN string — the oblivious
    * download primitive the URN read is built on, and the ADVISORY escape hatch.
    *
-   * Unlike the fail-closed {@link read}/{@link readText}, this NEVER throws on unverified or
-   * undecryptable content: it returns `{ bytes, verified, decrypted }` and leaves the trust decision
+   * Like {@link read} and unlike the fail-closed {@link readVerified}/{@link readText}, this NEVER
+   * throws on unverified or undecryptable content: it returns `{ bytes, verified, decrypted }` and leaves the trust decision
    * to the caller. Use it ONLY when you deliberately handle unverified bytes (e.g. rendering a decoy,
    * or inspecting content whose inclusion proof you check yourself). `verified === false` means the
    * bytes are NOT bound to the on-chain root — treat them as untrusted.
@@ -583,14 +585,43 @@ function decryptResourceChunks(
 }
 
 /**
- * True iff `root` is a PINNED on-chain generation root — a concrete lowercase 64-hex digest — as
- * opposed to an unpinned / "latest" sentinel (or null). The secure readers enforce inclusion only
- * for a pinned root; under an unpinned root inclusion cannot be proven in the blind model and is
- * advisory (the blind-model exception). Mirrors hub.dig.net's `rootIsPinned` so the two independent
- * implementations gate identically.
+ * The only root values that mean "no generation is pinned" — compared against the canonical form,
+ * so `LATEST` and `" latest "` are the same sentinel. Everything else is a root.
+ */
+const UNPINNED_ROOT_SENTINELS: ReadonlySet<string> = new Set(["", "latest"]);
+
+/**
+ * The one canonical rendering of a root: trimmed, lowercased, without a `0x` prefix. The wasm
+ * verifier, the RPC parameter and {@link rootIsPinned} must all see the SAME string — two layers
+ * disagreeing about what a root IS is how a verifiable root came to read as unpinned.
+ */
+export function canonicalizeRoot(root: string): string {
+  return root.trim().toLowerCase().replace(/^0x/, "");
+}
+
+/**
+ * True iff `root` PINS an on-chain generation, and therefore MUST satisfy the inclusion gate in the
+ * secure readers ({@link readVerified} / {@link readText}). FAIL-CLOSED BY DEFAULT: only the narrow
+ * set of unpinned sentinels (`""`, `latest`, in any casing/padding) and an absent root are ungated
+ * — every other value is treated as a pinned root and is gated.
+ *
+ * The polarity is deliberate and load-bearing. This predicate decides WHETHER content is checked
+ * against the chain, so its failure modes are asymmetric: over-recognising is safe (an unusable
+ * root simply cannot verify, producing a loud `INCLUSION_UNVERIFIED`), while under-recognising is
+ * silent (the gate is skipped and a spoofed node's plaintext is returned with no symptom). A
+ * `[0-9a-f]{64}` allowlist under-recognises every rendering the wasm verifier accepts but does not
+ * emit — uppercase and whitespace-padded roots verify correctly yet would read as unpinned.
+ *
+ * Stricter than hub.dig.net's `rootIsPinned` (`/^[0-9a-f]{64}$/i`), which gates the same canonical
+ * and uppercase roots but leaves padded/prefixed renderings ungated; every root the hub gates, this
+ * gates too.
+ *
+ * Under an unpinned root inclusion cannot be proven in the blind model, so it is advisory only (the
+ * blind-model exception).
  */
 export function rootIsPinned(root: string | null | undefined): boolean {
-  return typeof root === "string" && /^[0-9a-f]{64}$/.test(root);
+  if (typeof root !== "string") return false;
+  return !UNPINNED_ROOT_SENTINELS.has(canonicalizeRoot(root));
 }
 
 function undefinedFetch(): typeof fetch {

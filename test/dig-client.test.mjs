@@ -9,6 +9,7 @@ import {
   DigClient,
   DigSdkError,
   loadDigClientWasm,
+  rootIsPinned,
   DIG_CLIENT_WASM_SHA256,
 } from "../dist/index.js";
 
@@ -256,4 +257,114 @@ test("readVerified resolves under an unpinned root when decryption succeeds (inc
   assert.equal(r.decrypted, true);
   assert.equal(r.verified, false); // advisory under the blind-model exception
   assert.deepEqual(r.bytes, plaintext);
+});
+
+// ---------------------------------------------------------------------------------------------
+// #2262 gate finding 1/4 — the ACCEPTANCE DOMAIN of `rootIsPinned`.
+//
+// The predicate decides WHETHER the inclusion gate runs, so anything it fails to recognise as a
+// root is silently ungated. Its domain must therefore be at least as wide as the wasm verifier's:
+// any root the verifier will accept and verify against MUST read as pinned, or a root that
+// verifies correctly on an honest node returns attacker plaintext on a spoofed one, with no
+// symptom. These tests anchor the predicate to the wasm's OWN accepted domain (probed below),
+// never to captured output.
+// ---------------------------------------------------------------------------------------------
+
+const PINNED_ROOT = "cd".repeat(32);
+
+/** The five non-canonical renderings of a pinned root that a caller can plausibly supply. */
+const NON_CANONICAL_PINNED_ROOTS = {
+  uppercase: PINNED_ROOT.toUpperCase(),
+  "mixed case": "Cd".repeat(32),
+  "0x-prefixed": `0x${PINNED_ROOT}`,
+  "surrounding whitespace": `  ${PINNED_ROOT}  `,
+  "trailing newline": `${PINNED_ROOT}\n`,
+};
+
+/**
+ * Does the wasm verifier ACCEPT this rendering as a trusted root? Probed from the verifier itself:
+ * it rejects an unusable root with a "trusted root …" error before it ever looks at the proof, so
+ * any OTHER outcome means the root parsed and the rendering is inside the verifiable domain.
+ */
+function wasmAcceptsRoot(wasm, ciphertext, root) {
+  try {
+    wasm.verifyInclusion(ciphertext, "", root);
+    return true;
+  } catch (e) {
+    return !/trusted root/i.test(String(e.message));
+  }
+}
+
+test("rootIsPinned recognises every root rendering the wasm verifier accepts", async () => {
+  const wasm = await loadDigClientWasm();
+  const ct = wasm.encryptResource(STORE, "index.html", new Uint8Array([1]));
+  // Control: the probe must actually discriminate, or the assertion below is vacuous.
+  assert.equal(wasmAcceptsRoot(wasm, ct, PINNED_ROOT), true);
+  assert.equal(wasmAcceptsRoot(wasm, ct, "latest"), false);
+
+  for (const [name, root] of Object.entries(NON_CANONICAL_PINNED_ROOTS)) {
+    if (!wasmAcceptsRoot(wasm, ct, root)) continue; // outside the verifiable domain
+    assert.equal(
+      rootIsPinned(root),
+      true,
+      `${name} verifies but reads as unpinned`,
+    );
+  }
+});
+
+test("rootIsPinned is fail-closed: only the unpinned sentinels are ungated", () => {
+  // Pinned (gated) — canonical, every non-canonical rendering, and anything unrecognised.
+  assert.equal(rootIsPinned(PINNED_ROOT), true);
+  for (const [name, root] of Object.entries(NON_CANONICAL_PINNED_ROOTS)) {
+    assert.equal(rootIsPinned(root), true, `${name} must be gated`);
+  }
+  // Anchoring: a 64-hex digest embedded in a LONGER string is not a canonical root, so it must
+  // fall to the gated side (the wasm will reject it → a loud INCLUSION_UNVERIFIED), never slip
+  // through as "unpinned".
+  assert.equal(rootIsPinned(`root=${PINNED_ROOT}`), true);
+  assert.equal(rootIsPinned(`${PINNED_ROOT}${PINNED_ROOT}`), true);
+  assert.equal(rootIsPinned("not-a-root"), true);
+
+  // Unpinned (blind-model exception) — the narrow sentinel allowlist only, in any rendering.
+  for (const sentinel of ["latest", "LATEST", " latest ", "", "   "]) {
+    assert.equal(
+      rootIsPinned(sentinel),
+      false,
+      `${JSON.stringify(sentinel)} is a sentinel`,
+    );
+  }
+  assert.equal(rootIsPinned(null), false);
+  assert.equal(rootIsPinned(undefined), false);
+});
+
+test("readText fails closed for EVERY non-canonical rendering of a pinned root", async () => {
+  const wasm = await loadDigClientWasm();
+  const malicious = new TextEncoder().encode("<script>steal()</script>");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", malicious);
+  const urn = `urn:dig:chia:${STORE}/index.html`;
+
+  for (const [name, root] of Object.entries(NON_CANONICAL_PINNED_ROOTS)) {
+    const dig = new DigClient({
+      fetch: mockCiphertextRpc(ciphertext).fetchImpl,
+    });
+    await assert.rejects(
+      () => dig.readText({ urn, root }),
+      (e) => e instanceof DigSdkError && e.code === "INCLUSION_UNVERIFIED",
+      `spoofed node + ${name} pinned root must not yield plaintext`,
+    );
+  }
+});
+
+test("read() canonicalises the effective root once, so every layer sees one form", async () => {
+  const wasm = await loadDigClientWasm();
+  const plaintext = new TextEncoder().encode("canonical-root content");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", plaintext);
+
+  for (const root of Object.values(NON_CANONICAL_PINNED_ROOTS)) {
+    const dig = new DigClient({
+      fetch: mockCiphertextRpc(ciphertext).fetchImpl,
+    });
+    const r = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+    assert.equal(r.root, PINNED_ROOT);
+  }
 });

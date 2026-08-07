@@ -58,7 +58,9 @@ and the gate is decryption-only.
 return `{ bytes, verified, decrypted }` and **never throw** on unverified/undecryptable content
 (beyond a transport failure or a missing `root`) — a decoy is just opaque bytes, so presence stays
 unknowable. Use them only when you deliberately handle unverified bytes (a decoy, or content whose
-inclusion you verify yourself); check `rootIsPinned(root)` and `verified` yourself before trusting.
+inclusion you verify yourself); check `rootIsPinned(root)` — which is fail-closed, so any root that
+is not an explicit `""`/`latest` sentinel must satisfy `verified` — and `verified` yourself before
+trusting.
 
 A private store adds a salt — either inline in the URN (`…/secret.txt?salt=<hex>`) or as
 `dig.read({ urn, root, salt })`.
@@ -243,21 +245,21 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 
 ### `DigClient`
 
-| Member                                                                     | Description                                                                                                                               |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `new DigClient({ rpc?, fetch?, nodeProbe?, probeTimeoutMs?, isBrowser? })` | Resolves the node endpoint via the §5.3 ladder (below). An explicit `rpc` overrides it.                                                   |
-| `resolveEndpoint()`                                                        | The resolved `{ url, via }` (memoized per instance) — which node was chosen and why.                                                      |
-| `read({ urn, root?, salt? }, opts?)`                                       | **Oblivious** primitive → `{ bytes, verified, decrypted, … }`; never throws on unverified/undecryptable content.                          |
-| `readVerified({ urn, root?, salt? }, opts?)`                               | **Secure-by-default**: throws `DECRYPT_FAILED`, or `INCLUSION_UNVERIFIED` under a pinned root that fails inclusion. Use to render/serve.  |
-| `readText({ urn, root?, salt? }, opts?)`                                   | As `readVerified`, decoded to a UTF-8 string.                                                                                             |
-| `readResource({ storeId, resourceKey, root, salt? }, opts?)`               | Oblivious read by explicit parts instead of a URN (advisory flags, never throws on content).                                              |
-| `rootIsPinned(root)` _(export)_                                            | `true` iff `root` is a concrete 64-hex generation root (vs an unpinned / "latest" sentinel).                                              |
-| `deriveUrnKeys({ urn, salt? })`                                            | The root-independent `{ retrievalKey, decryptionKey }` for a URN.                                                                         |
-| `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)`            | The individual derivations.                                                                                                               |
-| `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)`         | Lower-level read-crypto.                                                                                                                  |
-| `getCollection({ launcherIds, did? }, opts?)`                              | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`.                                  |
-| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)`             | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`. |
-| `wasm()`                                                                   | The raw read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …); integrity per the loader path.                                |
+| Member                                                                     | Description                                                                                                                                |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `new DigClient({ rpc?, fetch?, nodeProbe?, probeTimeoutMs?, isBrowser? })` | Resolves the node endpoint via the §5.3 ladder (below). An explicit `rpc` overrides it.                                                    |
+| `resolveEndpoint()`                                                        | The resolved `{ url, via }` (memoized per instance) — which node was chosen and why.                                                       |
+| `read({ urn, root?, salt? }, opts?)`                                       | **Oblivious** primitive → `{ bytes, verified, decrypted, … }`; never throws on unverified/undecryptable content.                           |
+| `readVerified({ urn, root?, salt? }, opts?)`                               | **Secure-by-default**: throws `DECRYPT_FAILED`, or `INCLUSION_UNVERIFIED` under a pinned root that fails inclusion. Use to render/serve.   |
+| `readText({ urn, root?, salt? }, opts?)`                                   | As `readVerified`, decoded to a UTF-8 string.                                                                                              |
+| `readResource({ storeId, resourceKey, root, salt? }, opts?)`               | Oblivious read by explicit parts instead of a URN (advisory flags, never throws on content).                                               |
+| `rootIsPinned(root)` _(export)_                                            | **Fail-closed**: `true` unless `root` is absent or an unpinned sentinel (`""` / `latest`, any casing/padding). Roots are gated by default. |
+| `deriveUrnKeys({ urn, salt? })`                                            | The root-independent `{ retrievalKey, decryptionKey }` for a URN.                                                                          |
+| `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)`            | The individual derivations.                                                                                                                |
+| `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)`         | Lower-level read-crypto.                                                                                                                   |
+| `getCollection({ launcherIds, did? }, opts?)`                              | Public NFT-collection facts → `{ did, declared_did, item_count, resolved_count, royalty_basis_points }`.                                   |
+| `listCollectionItems({ launcherIds, offset?, limit? }, opts?)`             | A page of items resolved to their CURRENT on-chain owner + royalty + CHIP-0007 metadata → `{ items, offset, limit, total, next_offset }`.  |
+| `wasm()`                                                                   | The raw read-crypto wasm (`decryptChunk`, `encryptResource`, `version`, …); integrity per the loader path.                                 |
 
 ### `Paywall`
 
@@ -472,10 +474,12 @@ and is also returned by `capabilities().errorCodes`:
 - **Trust anchor** — content is verified against an **on-chain root** that _you_ resolve from the
   chain (coinset.org / the store singleton) and pass to `read({ root })`. The serving host can
   never be the trust anchor.
-- **Pinned vs unpinned root** — a **pinned** root is a concrete 64-hex generation root
-  (`rootIsPinned(root) === true`); the secure readers enforce inclusion against it. An **unpinned /
-  "latest"** root can't be proven in the blind model, so inclusion is advisory there (the
-  blind-model exception) and the secure readers gate on decryption only.
+- **Pinned vs unpinned root** — a root is **unpinned** only when it is absent or one of the
+  sentinels `""` / `latest`; anything else is **pinned** (`rootIsPinned(root) === true`) and the
+  secure readers enforce inclusion against it. The predicate is fail-closed on purpose: an
+  unrecognised root can only fail its proof loudly, whereas an unrecognised _pinned_ root would skip
+  the gate silently. An unpinned root can't be proven in the blind model, so inclusion is advisory
+  there (the blind-model exception) and the secure readers gate on decryption only.
 - **Oblivious vs secure-by-default reads** — `read`/`readResource` are the oblivious primitives
   (advisory flags, never throw on content); `readVerified`/`readText` are the fail-closed readers to
   use whenever you render or serve the bytes.
