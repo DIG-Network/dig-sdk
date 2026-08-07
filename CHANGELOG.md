@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.6.1] - 2026-08-07
+
+### Features
+- **dig-sdk:** Fail-closed readVerified sibling + rootIsPinned; keep read() oblivious (#2262) (#11)
+
 ## [0.5.0] - 2026-08-06
 
 ### Bug Fixes
