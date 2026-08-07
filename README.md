@@ -38,22 +38,27 @@ npm i @walletconnect/sign-client
 import { DigClient } from "@dignetwork/dig-sdk";
 
 const dig = new DigClient(); // resolves your node via the §5.3 ladder (see below)
-const { bytes, decrypted, verified } = await dig.read({
+const text = await dig.readText({
   urn: "urn:dig:chia:<storeId>/index.html", // the resource to read
   root: "<onchain-root-hex>", // the trust anchor (from the chain)
 });
-console.log(decrypted, verified, new TextDecoder().decode(bytes));
+console.log(text);
 ```
 
-`read()` is **fail-closed**: it verifies the served bytes' inclusion proof against `root` and throws
-`CONTENT_UNVERIFIED` on any content not bound to the chain — decryption success alone proves only
-"knows a public key", so it never returns chain-unbacked bytes (important now that the §5.3 ladder
-can point at a local, possibly-untrusted node). On success it returns the authenticated **plaintext**
-(`verified: true`, `decrypted: true`). `await dig.readText({ urn, root })` decodes that to a string
-(throwing `CONTENT_UNVERIFIED` on unverified content, `DECRYPT_FAILED` on a verified decoy). Need the
-advisory path — the raw `{ bytes, verified, decrypted }` for content you verify yourself, e.g. a
-decoy? Use `dig.readResource({ storeId, resourceKey, root, salt })`, which never throws on
-unverified/undecryptable bytes.
+**Rendering or serving content? Use the secure-by-default readers.** `readVerified()` (and the
+string-decoding `readText()`) fetch, decrypt, and **fail closed**: they throw `DECRYPT_FAILED` when
+the bytes don't decrypt under the URN, and `INCLUSION_UNVERIFIED` when the bytes are read under a
+**pinned** root (a concrete 64-hex generation root) yet fail their on-chain inclusion proof —
+decryption success alone proves only "knows a public key", so an untrusted node under the §5.3 ladder
+could otherwise serve `Enc(publicKey, malicious)` that decrypts fine. Under an **unpinned / "latest"**
+root inclusion can't be proven in the blind model, so it stays advisory (the blind-model exception)
+and the gate is decryption-only.
+
+**The oblivious primitive.** `read()` / `readResource()` are the genuine blind-model reads: they
+return `{ bytes, verified, decrypted }` and **never throw** on unverified/undecryptable content
+(beyond a transport failure or a missing `root`) — a decoy is just opaque bytes, so presence stays
+unknowable. Use them only when you deliberately handle unverified bytes (a decoy, or content whose
+inclusion you verify yourself); check `rootIsPinned(root)` and `verified` yourself before trusting.
 
 A private store adds a salt — either inline in the URN (`…/secret.txt?salt=<hex>`) or as
 `dig.read({ urn, root, salt })`.
@@ -242,9 +247,11 @@ Transports are also exported directly (`InjectedTransport`, `WalletConnectTransp
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `new DigClient({ rpc?, fetch?, nodeProbe?, probeTimeoutMs?, isBrowser? })` | Resolves the node endpoint via the §5.3 ladder (below). An explicit `rpc` overrides it.                                                   |
 | `resolveEndpoint()`                                                        | The resolved `{ url, via }` (memoized per instance) — which node was chosen and why.                                                      |
-| `read({ urn, root?, salt? }, opts?)`                                       | Fetch + verify + decrypt → `{ bytes, verified, decrypted, … }`.                                                                           |
-| `readText({ urn, root?, salt? }, opts?)`                                   | As `read`, decoded to a UTF-8 string (throws if not decrypted).                                                                           |
-| `readResource({ storeId, resourceKey, root, salt? }, opts?)`               | Read by explicit parts instead of a URN.                                                                                                  |
+| `read({ urn, root?, salt? }, opts?)`                                       | **Oblivious** primitive → `{ bytes, verified, decrypted, … }`; never throws on unverified/undecryptable content.                          |
+| `readVerified({ urn, root?, salt? }, opts?)`                               | **Secure-by-default**: throws `DECRYPT_FAILED`, or `INCLUSION_UNVERIFIED` under a pinned root that fails inclusion. Use to render/serve.  |
+| `readText({ urn, root?, salt? }, opts?)`                                   | As `readVerified`, decoded to a UTF-8 string.                                                                                             |
+| `readResource({ storeId, resourceKey, root, salt? }, opts?)`               | Oblivious read by explicit parts instead of a URN (advisory flags, never throws on content).                                              |
+| `rootIsPinned(root)` _(export)_                                            | `true` iff `root` is a concrete 64-hex generation root (vs an unpinned / "latest" sentinel).                                              |
 | `deriveUrnKeys({ urn, salt? })`                                            | The root-independent `{ retrievalKey, decryptionKey }` for a URN.                                                                         |
 | `retrievalKey(storeId, key)` / `deriveKey(storeId, key, salt?)`            | The individual derivations.                                                                                                               |
 | `verifyInclusion(ciphertext, proof, root)` / `reconstructUrn(...)`         | Lower-level read-crypto.                                                                                                                  |
@@ -428,28 +435,29 @@ try {
 The catalogue is exported as the typed `DIG_SDK_ERROR_CODES` const (and the `DigSdkErrorCode` union),
 and is also returned by `capabilities().errorCodes`:
 
-| Code                        | Thrown when                                                                                                        | Key context fields                   |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
-| `WC_OPTIONS_REQUIRED`       | WalletConnect was needed but no `walletConnect` options were given.                                                | `mode`                               |
-| `NO_INJECTED_WALLET`        | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`.                                   | `mode`, `acceptAnyInjected`          |
-| `WC_DEPENDENCY_MISSING`     | The optional `@walletconnect/sign-client` peer dep is not installed.                                               | —                                    |
-| `METHOD_NOT_SUPPORTED`      | The active session/transport does not grant the requested method.                                                  | `method`                             |
-| `WALLET_TIMEOUT`            | A wallet RPC timed out (e.g. Sage did not respond).                                                                | `method`, `timeoutMs`                |
-| `WALLET_NO_KEYS`            | The wallet returned no public keys / no key to sign with.                                                          | —                                    |
-| `ROOT_REQUIRED`             | A content read needs a confirmed on-chain root and none was supplied.                                              | `urn`                                |
-| `DECRYPT_FAILED`            | The resource did not decrypt under this URN (wrong key/salt, or a decoy).                                          | `urn`                                |
-| `CONTENT_UNVERIFIED`        | `read`/`readText` refused chain-unbacked bytes (inclusion proof failed). Use `readResource` for the advisory path. | `urn`, `root`                        |
-| `RPC_TRANSPORT`             | The dig RPC could not be reached (network/transport failure).                                                      | `rpcMethod`                          |
-| `RPC_ERROR`                 | The dig RPC returned an HTTP error or a JSON-RPC `error`.                                                          | `rpcMethod`, `httpStatus`, `rpcCode` |
-| `RPC_MALFORMED_RESPONSE`    | The dig RPC returned a malformed/inconsistent payload.                                                             | `rpcMethod`                          |
-| `WASM_INTEGRITY`            | The read-crypto wasm failed its SRI check — fail closed.                                                           | `expected`, `actual`                 |
-| `WASM_LOAD_FAILED`          | The read-crypto wasm could not be loaded.                                                                          | `httpStatus`, `wasmUrl`              |
-| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled).                            | `builder`                            |
-| `NO_SECURE_RANDOM`          | No secure random source to generate a payment nonce.                                                               | —                                    |
-| `DIGSTORE_NOT_FOUND`        | The `digstore` binary could not be spawned (not installed / not on PATH).                                          | `bin`                                |
-| `DEPLOY_FAILED`             | `digstore deploy` exited non-zero.                                                                                 | `exitCode`, `stderr`                 |
-| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule.                                                | `stdout`                             |
-| `INVALID_ARGUMENT`          | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule).                            | `value`, `expected`                  |
+| Code                        | Thrown when                                                                                                                            | Key context fields                   |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `WC_OPTIONS_REQUIRED`       | WalletConnect was needed but no `walletConnect` options were given.                                                                    | `mode`                               |
+| `NO_INJECTED_WALLET`        | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`.                                                       | `mode`, `acceptAnyInjected`          |
+| `WC_DEPENDENCY_MISSING`     | The optional `@walletconnect/sign-client` peer dep is not installed.                                                                   | —                                    |
+| `METHOD_NOT_SUPPORTED`      | The active session/transport does not grant the requested method.                                                                      | `method`                             |
+| `WALLET_TIMEOUT`            | A wallet RPC timed out (e.g. Sage did not respond).                                                                                    | `method`, `timeoutMs`                |
+| `WALLET_NO_KEYS`            | The wallet returned no public keys / no key to sign with.                                                                              | —                                    |
+| `ROOT_REQUIRED`             | A content read needs a confirmed on-chain root and none was supplied.                                                                  | `urn`                                |
+| `DECRYPT_FAILED`            | `readVerified`/`readText`: the resource did not decrypt under this URN (wrong key/salt, or a decoy).                                   | `urn`                                |
+| `INCLUSION_UNVERIFIED`      | `readVerified`/`readText`: under a **pinned** root, inclusion failed — refused chain-unbacked bytes. Use `read` for the advisory path. | `urn`, `root`                        |
+| `CONTENT_UNVERIFIED`        | _Deprecated_ — the pre-#2262 blanket unverified code. No path throws it now; superseded by `INCLUSION_UNVERIFIED`.                     | `urn`, `root`                        |
+| `RPC_TRANSPORT`             | The dig RPC could not be reached (network/transport failure).                                                                          | `rpcMethod`                          |
+| `RPC_ERROR`                 | The dig RPC returned an HTTP error or a JSON-RPC `error`.                                                                              | `rpcMethod`, `httpStatus`, `rpcCode` |
+| `RPC_MALFORMED_RESPONSE`    | The dig RPC returned a malformed/inconsistent payload.                                                                                 | `rpcMethod`                          |
+| `WASM_INTEGRITY`            | The read-crypto wasm failed its SRI check — fail closed.                                                                               | `expected`, `actual`                 |
+| `WASM_LOAD_FAILED`          | The read-crypto wasm could not be loaded.                                                                                              | `httpStatus`, `wasmUrl`              |
+| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled).                                                | `builder`                            |
+| `NO_SECURE_RANDOM`          | No secure random source to generate a payment nonce.                                                                                   | —                                    |
+| `DIGSTORE_NOT_FOUND`        | The `digstore` binary could not be spawned (not installed / not on PATH).                                                              | `bin`                                |
+| `DEPLOY_FAILED`             | `digstore deploy` exited non-zero.                                                                                                     | `exitCode`, `stderr`                 |
+| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule.                                                                    | `stdout`                             |
+| `INVALID_ARGUMENT`          | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule).                                                | `value`, `expected`                  |
 
 ---
 
@@ -464,6 +472,13 @@ and is also returned by `capabilities().errorCodes`:
 - **Trust anchor** — content is verified against an **on-chain root** that _you_ resolve from the
   chain (coinset.org / the store singleton) and pass to `read({ root })`. The serving host can
   never be the trust anchor.
+- **Pinned vs unpinned root** — a **pinned** root is a concrete 64-hex generation root
+  (`rootIsPinned(root) === true`); the secure readers enforce inclusion against it. An **unpinned /
+  "latest"** root can't be proven in the blind model, so inclusion is advisory there (the
+  blind-model exception) and the secure readers gate on decryption only.
+- **Oblivious vs secure-by-default reads** — `read`/`readResource` are the oblivious primitives
+  (advisory flags, never throw on content); `readVerified`/`readText` are the fail-closed readers to
+  use whenever you render or serve the bytes.
 
 ## Read-crypto wasm provenance
 

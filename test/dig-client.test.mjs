@@ -155,35 +155,105 @@ test("readResource (advisory) fetches by retrieval key + decrypts without requir
   assert.equal(res.root, root);
 });
 
-// REGRESSION (#2134 dual-gate finding): the §5.3 ladder makes an UNAUTHENTICATED local node the
-// default endpoint for Node consumers, so a spoofed node can serve Enc(publicKey, malicious) that
-// DECRYPTS (decrypted=true) but FAILS inclusion (verified=false). The fail-closed default readers
-// MUST refuse to return those chain-unbacked bytes.
-test("read throws on unverified content (fail-closed) — never returns chain-unbacked bytes", async () => {
+// #2262: read() is a GENUINE OBLIVIOUS primitive — it returns advisory { verified, decrypted }
+// and NEVER throws on unverified/undecryptable content (beyond a transport failure). The
+// secure-by-default sibling readVerified() (and the render-class readText()) are the fail-closed
+// readers renderers MUST use.
+test("read() is oblivious: unverified-but-decrypting content returns advisory, never throws", async () => {
   const wasm = await loadDigClientWasm();
   const root = "cd".repeat(32);
-  const malicious = new TextEncoder().encode("attacker-controlled plaintext");
-  const ciphertext = wasm.encryptResource(STORE, "index.html", malicious);
-  const { fetchImpl } = mockCiphertextRpc(ciphertext); // decrypts, but verified=false
+  const bytes = new TextEncoder().encode(
+    "served, decrypts, but chain-unbacked",
+  );
+  const ciphertext = wasm.encryptResource(STORE, "index.html", bytes);
+  const { fetchImpl } = mockCiphertextRpc(ciphertext); // bogus proof → verified=false
 
   const dig = new DigClient({ fetch: fetchImpl });
-  await assert.rejects(
-    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
-    (e) => e instanceof DigSdkError && e.code === "CONTENT_UNVERIFIED",
-    "read must fail-closed on unverified content",
-  );
+  const r = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  assert.equal(r.decrypted, true);
+  assert.equal(r.verified, false); // advisory — caller decides trust
+  assert.deepEqual(r.bytes, bytes);
 });
 
-test("readText throws CONTENT_UNVERIFIED on unverified content (fail-closed)", async () => {
+// (4) read() is oblivious on a DECRYPT failure too: hand back the raw ciphertext, no throw.
+test("read() oblivious on decrypt-fail: returns { decrypted:false, bytes:ciphertext }, no throw", async () => {
   const wasm = await loadDigClientWasm();
   const root = "cd".repeat(32);
-  const malicious = new TextEncoder().encode("attacker-controlled plaintext");
-  const ciphertext = wasm.encryptResource(STORE, "index.html", malicious);
+  const salt = "ab".repeat(32);
+  // Encrypt under a private-store salt, then read WITHOUT the salt → wrong key → decrypt fails.
+  const ciphertext = wasm.encryptResource(
+    STORE,
+    "index.html",
+    new TextEncoder().encode("x"),
+    salt,
+  );
   const { fetchImpl } = mockCiphertextRpc(ciphertext);
 
   const dig = new DigClient({ fetch: fetchImpl });
-  await assert.rejects(
-    () => dig.readText({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
-    (e) => e instanceof DigSdkError && e.code === "CONTENT_UNVERIFIED",
+  const r = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  assert.equal(r.decrypted, false);
+  assert.deepEqual(r.bytes, ciphertext); // the raw served ciphertext, unchanged
+});
+
+// (1) readVerified() is fail-closed: a decrypt failure throws DECRYPT_FAILED (never raw bytes).
+test("readVerified throws DECRYPT_FAILED when the URN does not decrypt the served bytes (pinned root)", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32); // pinned (64-hex)
+  const salt = "ab".repeat(32);
+  const ciphertext = wasm.encryptResource(
+    STORE,
+    "index.html",
+    new TextEncoder().encode("x"),
+    salt,
   );
+  const { fetchImpl } = mockCiphertextRpc(ciphertext); // read without salt → decrypt fails
+
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.readVerified({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "DECRYPT_FAILED",
+  );
+});
+
+// (2) Under a PINNED root, unverified inclusion is fatal for the secure readers — both readVerified
+// and readText throw INCLUSION_UNVERIFIED (the #2134 spoofed-node protection, now render-scoped).
+test("readVerified AND readText throw INCLUSION_UNVERIFIED under a pinned root when inclusion fails", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32); // pinned
+  const malicious = new TextEncoder().encode("attacker-controlled plaintext");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", malicious);
+  const urn = `urn:dig:chia:${STORE}/index.html`;
+
+  const dig1 = new DigClient({
+    fetch: mockCiphertextRpc(ciphertext).fetchImpl,
+  });
+  await assert.rejects(
+    () => dig1.readVerified({ urn, root }),
+    (e) => e instanceof DigSdkError && e.code === "INCLUSION_UNVERIFIED",
+  );
+  const dig2 = new DigClient({
+    fetch: mockCiphertextRpc(ciphertext).fetchImpl,
+  });
+  await assert.rejects(
+    () => dig2.readText({ urn, root }),
+    (e) => e instanceof DigSdkError && e.code === "INCLUSION_UNVERIFIED",
+  );
+});
+
+// (3) BLIND-MODEL EXCEPTION: under an UNPINNED / "latest" root, inclusion is advisory — readVerified
+// gates on decryption only and resolves even though the inclusion proof did not verify.
+test("readVerified resolves under an unpinned root when decryption succeeds (inclusion advisory)", async () => {
+  const wasm = await loadDigClientWasm();
+  const plaintext = new TextEncoder().encode("latest-root content");
+  const ciphertext = wasm.encryptResource(STORE, "index.html", plaintext);
+  const { fetchImpl } = mockCiphertextRpc(ciphertext); // verified=false
+
+  const dig = new DigClient({ fetch: fetchImpl });
+  const r = await dig.readVerified({
+    urn: `urn:dig:chia:${STORE}/index.html`,
+    root: "latest", // unpinned sentinel — not 64-hex
+  });
+  assert.equal(r.decrypted, true);
+  assert.equal(r.verified, false); // advisory under the blind-model exception
+  assert.deepEqual(r.bytes, plaintext);
 });

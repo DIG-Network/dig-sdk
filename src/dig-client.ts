@@ -11,9 +11,19 @@
 // never become the trust anchor: every content read REQUIRES a caller-supplied root.
 //
 // OBLIVIOUS model. The host returns indistinguishable ciphertext for any retrieval key, so
-// presence is UNKNOWABLE. A read therefore NEVER concludes "not found": it returns plaintext when
-// the URN key decrypts the bytes, otherwise the raw ciphertext (a decoy is just opaque bytes). The
-// only thrown error is a transport failure.
+// presence is UNKNOWABLE. The oblivious primitives `read` / `readResource` therefore NEVER conclude
+// "not found": they return plaintext when the URN key decrypts the bytes, otherwise the raw
+// ciphertext (a decoy is just opaque bytes), with advisory `{ verified, decrypted }` flags. The only
+// error they throw is a transport failure — the trust decision is left entirely to the caller.
+//
+// SECURE-BY-DEFAULT siblings. Anything that RENDERS or SERVES read bytes must fail closed, so the
+// oblivious primitives have fail-closed companions: `readVerified` (and the render-class `readText`)
+// throw `DECRYPT_FAILED` on undecryptable bytes and `INCLUSION_UNVERIFIED` when the bytes are read
+// under a PINNED root (a concrete 64-hex generation root via {@link rootIsPinned}) yet fail their
+// on-chain inclusion proof — never returning chain-unbacked bytes to a renderer. Under an UNPINNED
+// / "latest" root inclusion cannot be proven in the blind model, so it stays advisory (the
+// blind-model exception): the secure readers gate on decryption only. Renderers use `readVerified` /
+// `readText`; deliberate decoy/self-verified handling uses the oblivious `read` / `readResource`.
 
 import { loadDigClientWasm } from "./loader.js";
 import type { DigClientWasm } from "./wasm.js";
@@ -206,22 +216,22 @@ export class DigClient {
   }
 
   /**
-   * Fetch + verify + decrypt one resource by URN — the FAIL-CLOSED default reader. `root` is the
-   * on-chain generation root to verify against (resolved by the caller from the chain); when omitted,
-   * the root embedded in the URN is used.
+   * Fetch + (advisory) verify + decrypt one resource by URN — the OBLIVIOUS read primitive. `root`
+   * is the on-chain generation root to verify against (resolved by the caller from the chain); when
+   * omitted, the root embedded in the URN is used. A `root` is always REQUIRED (the host can never
+   * be the trust anchor); it throws `ROOT_REQUIRED` when none is supplied or derivable.
    *
-   * INTEGRITY (why this throws). Decryption success alone proves only "knows a public key": for a
-   * public (saltless) store the content key is derivable from the public URN, so an untrusted or
-   * spoofed node (e.g. a plaintext `localhost` under the §5.3 ladder) could serve `Enc(publicKey,
-   * malicious)` bytes that decrypt fine. Only the on-chain inclusion proof binds content to the
-   * chain. This reader therefore REQUIRES `verified === true` and throws `CONTENT_UNVERIFIED`
-   * otherwise — it never returns chain-unbacked bytes. A caller that deliberately wants the advisory
-   * (possibly-unverified) bytes uses {@link readResource}, which returns the `{ verified, decrypted }`
-   * flags instead of throwing.
+   * OBLIVIOUS (never throws on content). Because the host returns indistinguishable ciphertext for
+   * any key, this NEVER concludes "not found" and NEVER throws on unverified/undecryptable content:
+   * it returns `{ bytes, verified, decrypted }` and leaves the trust decision to the caller.
+   * `decrypted === false` hands back the raw served ciphertext (a decoy / wrong key/salt);
+   * `verified === false` means the bytes are NOT bound to the on-chain root. Beyond a transport
+   * failure the only thrown error is `ROOT_REQUIRED`.
    *
-   * NOTE — behaviour change vs 0.4.4: `read`/`readText` now throw on unverified content (a deliberate
-   * secure default); the old advisory behaviour lives on in `readResource`. Still never a "not found"
-   * (presence is unknowable) — beyond a transport failure it throws only when content fails to verify.
+   * DO NOT render or serve these bytes without a trust check. Anything that displays/serves read
+   * content MUST use the secure-by-default {@link readVerified} (or {@link readText}), which fail
+   * closed on a decrypt failure and on a pinned-root inclusion failure. Use `read` only when you
+   * deliberately handle unverified bytes (a decoy, or content whose inclusion you verify yourself).
    */
   async read(
     input: { urn: string; root?: string | null; salt?: string | null },
@@ -237,7 +247,7 @@ export class DigClient {
         { urn: input.urn },
       );
     }
-    const result = await this.readResource(
+    return this.readResource(
       {
         storeId: parsed.storeId,
         resourceKey: parsed.resourceKey,
@@ -246,25 +256,31 @@ export class DigClient {
       },
       opts,
     );
-    if (!result.verified) {
-      throw new DigSdkError(
-        "CONTENT_UNVERIFIED",
-        "served content did not verify against the on-chain root — refusing to return chain-unbacked bytes (use readResource to handle unverified content deliberately)",
-        { urn: input.urn, root: effRoot },
-      );
-    }
-    return result;
   }
 
   /**
-   * As {@link read} (fail-closed: throws `CONTENT_UNVERIFIED` on unverified content), but decoding the
-   * verified plaintext to a UTF-8 string — throwing `DECRYPT_FAILED` when the bytes are chain-backed
-   * yet do not decrypt under this URN (wrong store/key/salt, or a verified decoy).
+   * The SECURE-BY-DEFAULT read: fetch + decrypt + trust-gate one resource by URN, throwing rather
+   * than ever returning bytes a renderer must not trust. This is what anything that RENDERS or SERVES
+   * content should call (the oblivious {@link read} is the escape hatch for deliberate decoy /
+   * self-verified handling).
+   *
+   * Trust gate (why it throws):
+   * - `DECRYPT_FAILED` when the served bytes do not decrypt+authenticate under this URN (wrong
+   *   store/key/salt, or a decoy) — a renderer must never show undecryptable bytes.
+   * - `INCLUSION_UNVERIFIED` when the effective root is PINNED (a concrete 64-hex generation root,
+   *   {@link rootIsPinned}) and the inclusion proof did not verify: decryption alone proves only
+   *   "knows a public key", so a spoofed node could serve `Enc(publicKey, malicious)` that decrypts
+   *   fine — only the on-chain proof binds content to the chain.
+   * - BLIND-MODEL EXCEPTION: under an UNPINNED / "latest" root inclusion cannot be proven in the
+   *   oblivious model, so it is advisory and NOT fatal — the gate is decryption-only. The returned
+   *   result still carries `verified` so the caller can see the advisory outcome.
+   *
+   * On success returns the same {@link ReadResult} as {@link read} (with `decrypted === true`).
    */
-  async readText(
+  async readVerified(
     input: { urn: string; root?: string | null; salt?: string | null },
     opts: ReadOptions = {},
-  ): Promise<string> {
+  ): Promise<ReadResult> {
     const r = await this.read(input, opts);
     if (!r.decrypted) {
       throw new DigSdkError(
@@ -273,6 +289,26 @@ export class DigClient {
         { urn: input.urn },
       );
     }
+    if (rootIsPinned(r.root) && r.verified === false) {
+      throw new DigSdkError(
+        "INCLUSION_UNVERIFIED",
+        "served content did not verify against the pinned on-chain root — refusing to return chain-unbacked bytes to a renderer (use read() to handle unverified content deliberately)",
+        { urn: input.urn, root: r.root },
+      );
+    }
+    return r;
+  }
+
+  /**
+   * As {@link readVerified} — the render-class reader — but decoding the trusted plaintext to a
+   * UTF-8 string. Throws `DECRYPT_FAILED` on undecryptable bytes and `INCLUSION_UNVERIFIED` under a
+   * pinned root whose inclusion proof failed (the blind-model exception applies for unpinned roots).
+   */
+  async readText(
+    input: { urn: string; root?: string | null; salt?: string | null },
+    opts: ReadOptions = {},
+  ): Promise<string> {
+    const r = await this.readVerified(input, opts);
     return new TextDecoder().decode(r.bytes);
   }
 
@@ -544,6 +580,17 @@ function decryptResourceChunks(
     q += part.length;
   }
   return out;
+}
+
+/**
+ * True iff `root` is a PINNED on-chain generation root — a concrete lowercase 64-hex digest — as
+ * opposed to an unpinned / "latest" sentinel (or null). The secure readers enforce inclusion only
+ * for a pinned root; under an unpinned root inclusion cannot be proven in the blind model and is
+ * advisory (the blind-model exception). Mirrors hub.dig.net's `rootIsPinned` so the two independent
+ * implementations gate identically.
+ */
+export function rootIsPinned(root: string | null | undefined): boolean {
+  return typeof root === "string" && /^[0-9a-f]{64}$/.test(root);
 }
 
 function undefinedFetch(): typeof fetch {
