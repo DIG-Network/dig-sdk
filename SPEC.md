@@ -289,6 +289,13 @@ is just opaque bytes that fail to decrypt.
   backend caps each response at 3 MiB (the Lambda/API-Gateway response ceiling) — and reassembles by
   looping until `complete` is true or `next_offset` is null, writing each chunk at its returned
   `offset` into a `total_length` buffer. This 3-MiB cap is the shared contract with the RPC.
+- **Resource-size ceiling (untrusted-node DoS guard):** the declared `total_length` is bounded
+  against a hard ceiling of **512 MiB** (`512 * 1024 * 1024` bytes) BEFORE the reassembly buffer is
+  allocated. A node is untrusted (the §5.3 ladder makes an unauthenticated local node the default
+  endpoint), so a small response declaring a multi-GiB `total_length` would otherwise force a giant
+  allocation ahead of any verification. A declared length above the ceiling — or one the host cannot
+  allocate — is refused with `RESOURCE_TOO_LARGE` and no allocation is attempted. NOTE: 512 MiB is an
+  SDK-chosen client-side bound, not (yet) a normative wire constant negotiated with the RPC.
 
 **`dig.getCollection`** — read a collection's public, owner-independent facts.
 

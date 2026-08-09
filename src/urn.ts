@@ -60,6 +60,48 @@ export function parseUrn(raw: string): ParsedUrn {
   };
 }
 
+/** The placeholder a private-store salt is replaced with in any error/display string. */
+export const REDACTED_SALT = "<redacted>";
+
+// Fallback matcher for a `salt=<value>` occurrence in a string that is NOT a well-formed URN.
+// Matches the value up to the next query/fragment delimiter or whitespace, so a bare
+// `salt=<secret>` (no leading `?`/`&`, e.g. inside a malformed-URN error `value`) is still redacted.
+// Module-scoped so it compiles once (no `i` flag — the class is already case-covering where hex).
+const SALT_PARAM_RE = /(salt=)[^&#\s]+/g;
+
+/**
+ * Return `raw` with any private-store `salt=<secret>` replaced by {@link REDACTED_SALT}, so a URN
+ * (or any string) can be put into a logged/serialized error without republishing the out-of-band
+ * secret that makes a store private.
+ *
+ * PURE and NON-THROWING by design: it matches with the SAME {@link URN_RE} regex `parseUrn` uses
+ * (so it is not a divergent parser) but NEVER calls `parseUrn` — calling the throwing parser here
+ * would construct a `DigSdkError`, whose own context redaction would re-enter this function and
+ * recurse without bound (a fatal, uncatchable crash). For a well-formed URN it rebuilds the string
+ * with the salt group redacted; otherwise it strips any `salt=<value>` occurrence from the raw
+ * string. It must never throw and never construct a `DigSdkError`.
+ */
+export function redactUrnSalt(raw: string): string {
+  const s = String(raw ?? "");
+  // A string with no `salt=` substring cannot carry a private-store salt — return it untouched
+  // (also skips the regexes for the common case: rpcMethod, plain paths, non-URN values).
+  if (!s.includes("salt=")) return s;
+  const m = URN_RE.exec(s);
+  if (m) {
+    // A well-formed URN. m[4] is the salt group; absent → nothing to redact.
+    if (!m[4]) return s;
+    const storeId = m[1]!.toLowerCase();
+    const root = m[2] ? m[2].toLowerCase() : null;
+    const resourceKey = m[3]!;
+    const base = root
+      ? `urn:dig:chia:${storeId}:${root}/${resourceKey}`
+      : `urn:dig:chia:${storeId}/${resourceKey}`;
+    return `${base}?salt=${REDACTED_SALT}`;
+  }
+  // Not a well-formed URN — strip any `salt=<value>` occurrence from the raw string.
+  return s.replace(SALT_PARAM_RE, `$1${REDACTED_SALT}`);
+}
+
 /** True iff `raw` is a syntactically valid DIG URN. Never throws. */
 export function isUrn(raw: string): boolean {
   try {

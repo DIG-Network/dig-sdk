@@ -60,6 +60,14 @@ export const DEFAULT_RPC = GATEWAY_URL;
 // loops chunks until `complete`.
 const RPC_CHUNK_BYTES = 3 * 1024 * 1024;
 
+// Hard ceiling on a single resource's declared `total_length`, enforced BEFORE allocating the
+// reassembly buffer. The §5.3 ladder makes an unauthenticated local node the default endpoint, so a
+// ~200-byte response declaring a multi-GiB `total_length` would otherwise force a giant allocation
+// before any verification — a cheap DoS. A DIG resource is a single addressable web asset (one file
+// within a store), for which 512 MiB is far above any plausible real size yet safely allocatable.
+// NOTE: this bound is chosen by the SDK, not yet a normative protocol constant — see SPEC.md.
+const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
+
 /** Options to construct a DigClient. */
 export interface DigClientOptions {
   /**
@@ -482,8 +490,40 @@ export class DigClient {
           { rpcMethod: "dig.getContent" },
         );
       if (total === null) {
-        total = r.total_length >>> 0;
-        buf = new Uint8Array(total);
+        // Bound the UNTRUSTED declared length against the protocol ceiling BEFORE allocating. Check
+        // the raw number (not `>>> 0`, which would wrap a >2^32 value down under the ceiling).
+        const declared = Number(r.total_length);
+        if (!Number.isFinite(declared) || declared < 0) {
+          throw new DigSdkError(
+            "RPC_MALFORMED_RESPONSE",
+            "The content network declared an invalid total_length.",
+            { rpcMethod: "dig.getContent", declaredLength: r.total_length },
+          );
+        }
+        if (declared > MAX_RESOURCE_BYTES) {
+          throw new DigSdkError(
+            "RESOURCE_TOO_LARGE",
+            `The content network declared a resource of ${declared} bytes, above the ${MAX_RESOURCE_BYTES}-byte ceiling; refusing to allocate.`,
+            {
+              rpcMethod: "dig.getContent",
+              declaredLength: declared,
+              maxLength: MAX_RESOURCE_BYTES,
+            },
+          );
+        }
+        total = declared >>> 0; // safe: declared <= ceiling (< 2^31)
+        try {
+          buf = new Uint8Array(total);
+        } catch (cause) {
+          // A length under the ceiling can still exceed what THIS host can allocate — fail loudly
+          // with a typed refusal rather than letting a RangeError abort the process.
+          throw new DigSdkError(
+            "RESOURCE_TOO_LARGE",
+            `Failed to allocate a ${total}-byte buffer for the resource.`,
+            { rpcMethod: "dig.getContent", declaredLength: total },
+            { cause },
+          );
+        }
       }
       if (chunkLens === null && Array.isArray(r.chunk_lens)) {
         chunkLens = r.chunk_lens.map((n) => n >>> 0);
