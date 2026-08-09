@@ -12,6 +12,8 @@
  * The stable error-code catalogue. Each value is an UPPER_SNAKE symbolic string that callers may
  * branch on. Frozen so it can't be mutated at runtime; the README documents each meaning.
  */
+import { redactUrnSalt, REDACTED_SALT } from "./urn.js";
+
 export const DIG_SDK_ERROR_CODES = Object.freeze({
   // ---- provider / connect (provider/chia-provider.ts, provider/*) ----
   /** WalletConnect was requested/needed but no `walletConnect` options were supplied. */
@@ -57,6 +59,12 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
   RPC_ERROR: "RPC_ERROR",
   /** The dig RPC returned a malformed / inconsistent payload (e.g. chunk-length mismatch). */
   RPC_MALFORMED_RESPONSE: "RPC_MALFORMED_RESPONSE",
+  /**
+   * A node declared a resource `total_length` above the protocol ceiling (or one the host cannot
+   * allocate). Refused BEFORE allocating, so an untrusted node (the §5.3 ladder makes an
+   * unauthenticated local node the default endpoint) cannot force a giant allocation as a cheap DoS.
+   */
+  RESOURCE_TOO_LARGE: "RESOURCE_TOO_LARGE",
   /** The read-crypto wasm failed its SRI integrity check — fail closed. */
   WASM_INTEGRITY: "WASM_INTEGRITY",
   /** The read-crypto wasm could not be loaded (fetch/resolve failure). */
@@ -129,6 +137,32 @@ export interface DigSdkErrorContext {
  */
 const DIG_SDK_ERROR_BRAND = "__dignetwork_dig_sdk_error__";
 
+/**
+ * Redact any private-store salt from every string in a context value (recursively), at the SINGLE
+ * point context is stored on an error. A per-call-site redaction is one a future throw site forgets;
+ * doing it here means every {@link DigSdkError} — whatever its code or fields — is safe to log.
+ */
+function redactContext<T>(value: T): T {
+  if (typeof value === "string") {
+    // `redactUrnSalt` is pure and non-throwing by contract; this try/catch is a hard guarantee that
+    // error CONSTRUCTION can never itself throw or (worse) construct another DigSdkError from
+    // unredacted input — on any failure fall back to the fully-redacted placeholder, never the raw
+    // (possibly salted) string.
+    try {
+      return redactUrnSalt(value) as T;
+    } catch {
+      return REDACTED_SALT as T;
+    }
+  }
+  if (Array.isArray(value)) return value.map(redactContext) as T;
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactContext(v);
+    return out as T;
+  }
+  return value;
+}
+
 export class DigSdkError extends Error {
   /** The stable machine code (UPPER_SNAKE). Branch on this, not the message. */
   readonly code: DigSdkErrorCode;
@@ -144,7 +178,8 @@ export class DigSdkError extends Error {
     super(message);
     this.name = "DigSdkError";
     this.code = code;
-    this.context = context;
+    // Redact any private-store salt from context here so no throw site can ever leak it (#2303).
+    this.context = redactContext(context);
     // Set `cause` directly (rather than via the ES2022 Error options arg) so the lib target stays
     // ES2020 while still preserving the underlying error for diagnostics.
     if (options.cause !== undefined) {

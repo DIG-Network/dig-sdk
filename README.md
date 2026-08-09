@@ -437,29 +437,30 @@ try {
 The catalogue is exported as the typed `DIG_SDK_ERROR_CODES` const (and the `DigSdkErrorCode` union),
 and is also returned by `capabilities().errorCodes`:
 
-| Code                        | Thrown when                                                                                                                            | Key context fields                   |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `WC_OPTIONS_REQUIRED`       | WalletConnect was needed but no `walletConnect` options were given.                                                                    | `mode`                               |
-| `NO_INJECTED_WALLET`        | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`.                                                       | `mode`, `acceptAnyInjected`          |
-| `WC_DEPENDENCY_MISSING`     | The optional `@walletconnect/sign-client` peer dep is not installed.                                                                   | —                                    |
-| `METHOD_NOT_SUPPORTED`      | The active session/transport does not grant the requested method.                                                                      | `method`                             |
-| `WALLET_TIMEOUT`            | A wallet RPC timed out (e.g. Sage did not respond).                                                                                    | `method`, `timeoutMs`                |
-| `WALLET_NO_KEYS`            | The wallet returned no public keys / no key to sign with.                                                                              | —                                    |
-| `ROOT_REQUIRED`             | A content read needs a confirmed on-chain root and none was supplied.                                                                  | `urn`                                |
-| `DECRYPT_FAILED`            | `readVerified`/`readText`: the resource did not decrypt under this URN (wrong key/salt, or a decoy).                                   | `urn`                                |
-| `INCLUSION_UNVERIFIED`      | `readVerified`/`readText`: under a **pinned** root, inclusion failed — refused chain-unbacked bytes. Use `read` for the advisory path. | `urn`, `root`                        |
-| `CONTENT_UNVERIFIED`        | _Deprecated_ — the pre-#2262 blanket unverified code. No path throws it now; superseded by `INCLUSION_UNVERIFIED`.                     | `urn`, `root`                        |
-| `RPC_TRANSPORT`             | The dig RPC could not be reached (network/transport failure).                                                                          | `rpcMethod`                          |
-| `RPC_ERROR`                 | The dig RPC returned an HTTP error or a JSON-RPC `error`.                                                                              | `rpcMethod`, `httpStatus`, `rpcCode` |
-| `RPC_MALFORMED_RESPONSE`    | The dig RPC returned a malformed/inconsistent payload.                                                                                 | `rpcMethod`                          |
-| `WASM_INTEGRITY`            | The read-crypto wasm failed its SRI check — fail closed.                                                                               | `expected`, `actual`                 |
-| `WASM_LOAD_FAILED`          | The read-crypto wasm could not be loaded.                                                                                              | `httpStatus`, `wasmUrl`              |
-| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled).                                                | `builder`                            |
-| `NO_SECURE_RANDOM`          | No secure random source to generate a payment nonce.                                                                                   | —                                    |
-| `DIGSTORE_NOT_FOUND`        | The `digstore` binary could not be spawned (not installed / not on PATH).                                                              | `bin`                                |
-| `DEPLOY_FAILED`             | `digstore deploy` exited non-zero.                                                                                                     | `exitCode`, `stderr`                 |
-| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule.                                                                    | `stdout`                             |
-| `INVALID_ARGUMENT`          | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule).                                                | `value`, `expected`                  |
+| Code                        | Thrown when                                                                                                                            | Key context fields                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `WC_OPTIONS_REQUIRED`       | WalletConnect was needed but no `walletConnect` options were given.                                                                    | `mode`                                     |
+| `NO_INJECTED_WALLET`        | `mode:"injected"` (or the injected leg of `auto`) found no usable `window.chia`.                                                       | `mode`, `acceptAnyInjected`                |
+| `WC_DEPENDENCY_MISSING`     | The optional `@walletconnect/sign-client` peer dep is not installed.                                                                   | —                                          |
+| `METHOD_NOT_SUPPORTED`      | The active session/transport does not grant the requested method.                                                                      | `method`                                   |
+| `WALLET_TIMEOUT`            | A wallet RPC timed out (e.g. Sage did not respond).                                                                                    | `method`, `timeoutMs`                      |
+| `WALLET_NO_KEYS`            | The wallet returned no public keys / no key to sign with.                                                                              | —                                          |
+| `ROOT_REQUIRED`             | A content read needs a confirmed on-chain root and none was supplied.                                                                  | `urn`                                      |
+| `DECRYPT_FAILED`            | `readVerified`/`readText`: the resource did not decrypt under this URN (wrong key/salt, or a decoy).                                   | `urn`                                      |
+| `INCLUSION_UNVERIFIED`      | `readVerified`/`readText`: under a **pinned** root, inclusion failed — refused chain-unbacked bytes. Use `read` for the advisory path. | `urn`, `root`                              |
+| `CONTENT_UNVERIFIED`        | _Deprecated_ — the pre-#2262 blanket unverified code. No path throws it now; superseded by `INCLUSION_UNVERIFIED`.                     | `urn`, `root`                              |
+| `RPC_TRANSPORT`             | The dig RPC could not be reached (network/transport failure).                                                                          | `rpcMethod`                                |
+| `RPC_ERROR`                 | The dig RPC returned an HTTP error or a JSON-RPC `error`.                                                                              | `rpcMethod`, `httpStatus`, `rpcCode`       |
+| `RPC_MALFORMED_RESPONSE`    | The dig RPC returned a malformed/inconsistent payload.                                                                                 | `rpcMethod`                                |
+| `RESOURCE_TOO_LARGE`        | A node declared a `total_length` above the protocol ceiling (or one the host can't allocate) — refused before allocating.              | `rpcMethod`, `declaredLength`, `maxLength` |
+| `WASM_INTEGRITY`            | The read-crypto wasm failed its SRI check — fail closed.                                                                               | `expected`, `actual`                       |
+| `WASM_LOAD_FAILED`          | The read-crypto wasm could not be loaded.                                                                                              | `httpStatus`, `wasmUrl`                    |
+| `SPEND_BUILDER_UNAVAILABLE` | The canonical chip35 wasm builder for the operation is unavailable (never hand-rolled).                                                | `builder`                                  |
+| `NO_SECURE_RANDOM`          | No secure random source to generate a payment nonce.                                                                                   | —                                          |
+| `DIGSTORE_NOT_FOUND`        | The `digstore` binary could not be spawned (not installed / not on PATH).                                                              | `bin`                                      |
+| `DEPLOY_FAILED`             | `digstore deploy` exited non-zero.                                                                                                     | `exitCode`, `stderr`                       |
+| `DEPLOY_OUTPUT_UNPARSEABLE` | `digstore deploy --json` output could not be parsed into a capsule.                                                                    | `stdout`                                   |
+| `INVALID_ARGUMENT`          | A malformed argument (non-hex, bad URN, mutually-exclusive options, malformed capsule).                                                | `value`, `expected`                        |
 
 ---
 

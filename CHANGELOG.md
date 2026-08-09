@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.6.2] - 2026-08-09
+
+### Security
+- **dig-client:** Redact the private-store `?salt=` secret from every `DigSdkError` context so a
+  logged error can't republish it; centralized in the `DigSdkError` constructor (#2303).
+- **dig-client:** Bound an untrusted node's declared `total_length` against a 512 MiB ceiling before
+  allocating the reassembly buffer, refusing an oversized/unallocatable length with the new
+  `RESOURCE_TOO_LARGE` error — closes a cheap pre-verification allocation DoS (#2303).
+
 ## [0.6.1] - 2026-08-07
 
 ### Features

@@ -11,6 +11,7 @@ import {
   loadDigClientWasm,
   rootIsPinned,
   DIG_CLIENT_WASM_SHA256,
+  parseUrn,
 } from "../dist/index.js";
 
 const STORE = "ab".repeat(32);
@@ -367,4 +368,169 @@ test("read() canonicalises the effective root once, so every layer sees one form
     const r = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
     assert.equal(r.root, PINNED_ROOT);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// #2303 defect 1 — the private-store secret salt MUST NOT leak into a thrown error.
+//
+// A private-store URN carries `?salt=<secret>` — the out-of-band secret that makes the store
+// private. Any DigSdkError that copies the raw URN into its context republishes that secret the
+// moment a consumer logs the error (console/Sentry/Datadog). The whole serialized error (message +
+// every context field) must contain the secret NOWHERE — a spot-check of one field is not enough,
+// because a future field could carry it too.
+// ---------------------------------------------------------------------------------------------
+const SECRET_SALT = "deadbeef".repeat(8); // 64-hex; distinctive so it is greppable in the error
+
+// Serialize EVERYTHING a consumer could log: the message, the toJSON() view, and every own
+// property (message/stack/context and any nested field), so the assertion sees the whole error.
+function serializeError(err) {
+  return [
+    err.message,
+    err.stack ?? "",
+    JSON.stringify(err.toJSON?.() ?? {}),
+    JSON.stringify(err.context ?? {}),
+  ].join("\n");
+}
+
+test("DECRYPT_FAILED never leaks the private-store salt into the serialized error (#2303)", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32); // pinned
+  // Serve public (no-salt) ciphertext, then read with a private-store salt → wrong key → decrypt fails.
+  const ciphertext = wasm.encryptResource(
+    STORE,
+    "index.html",
+    new TextEncoder().encode("x"),
+  );
+  const { fetchImpl } = mockCiphertextRpc(ciphertext);
+  const dig = new DigClient({ fetch: fetchImpl });
+  const urn = `urn:dig:chia:${STORE}/index.html?salt=${SECRET_SALT}`;
+
+  const err = await dig.readVerified({ urn, root }).then(
+    () => null,
+    (e) => e,
+  );
+  assert.ok(err instanceof DigSdkError && err.code === "DECRYPT_FAILED");
+  const serialized = serializeError(err);
+  assert.ok(
+    !serialized.includes(SECRET_SALT),
+    `salt leaked into serialized error: ${serialized}`,
+  );
+});
+
+test("INCLUSION_UNVERIFIED never leaks the private-store salt (#2303)", async () => {
+  const wasm = await loadDigClientWasm();
+  const root = "cd".repeat(32); // pinned
+  // Encrypt UNDER the salt so it decrypts, but serve a bogus proof → inclusion fails under pinned root.
+  const ciphertext = wasm.encryptResource(
+    STORE,
+    "index.html",
+    new TextEncoder().encode("private content"),
+    SECRET_SALT,
+  );
+  const { fetchImpl } = mockCiphertextRpc(ciphertext);
+  const dig = new DigClient({ fetch: fetchImpl });
+  const urn = `urn:dig:chia:${STORE}/index.html?salt=${SECRET_SALT}`;
+
+  const err = await dig.readVerified({ urn, root }).then(
+    () => null,
+    (e) => e,
+  );
+  assert.ok(err instanceof DigSdkError && err.code === "INCLUSION_UNVERIFIED");
+  const serialized = serializeError(err);
+  assert.ok(
+    !serialized.includes(SECRET_SALT),
+    `salt leaked into serialized error: ${serialized}`,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// #2303 defect 2 — an untrusted node's declared total_length must be bounded BEFORE allocation.
+//
+// The §5.3 ladder makes an unauthenticated local node the default endpoint, so a ~200-byte JSON
+// declaring an absurd total_length would otherwise force a multi-GiB allocation before any
+// verification — a cheap DoS. The client must refuse a total_length above the protocol ceiling
+// with a typed error, WITHOUT attempting the allocation.
+// ---------------------------------------------------------------------------------------------
+function mockOversizedRpc(declaredTotal) {
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: declaredTotal,
+            offset: 0,
+            ciphertext: "",
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+  return { fetchImpl };
+}
+
+test("refuses an oversized total_length with RESOURCE_TOO_LARGE, without allocating (#2303)", async () => {
+  const root = "cd".repeat(32);
+  // 0xFFFFFFFF (4 GiB - 1) — the max a `>>> 0` cast preserves, far above any plausible resource.
+  const { fetchImpl } = mockOversizedRpc(0xffffffff);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// #2303 regression — salt redaction must NOT recurse into DigSdkError construction.
+//
+// A malformed URL that carries `salt=` makes parseUrn throw INVALID_ARGUMENT with the raw string
+// in `value`. If the redactor re-parsed that value with the THROWING parseUrn it would construct
+// another DigSdkError → whose context redaction re-enters the redactor → unbounded recursion that
+// terminates as a fatal, uncatchable V8 crash (a ~40-byte DoS). The redactor must be pure: it must
+// redact WITHOUT re-entering error construction.
+// ---------------------------------------------------------------------------------------------
+function serializeErrorFull(err) {
+  return [
+    err.message,
+    err.stack ?? "",
+    JSON.stringify(err.toJSON?.() ?? {}),
+    JSON.stringify(err.context ?? {}),
+    err.cause ? String(err.cause) : "",
+  ].join("\n");
+}
+
+test("parseUrn on a malformed URN carrying salt= does NOT crash and never leaks the salt (#2303)", () => {
+  const SALT = "deadbeef".repeat(4); // 32-hex; distinctive + greppable
+  // Malformed store id ("zz" is not 64-hex) AND a salt query param — the recursion trigger.
+  const bad = `urn:dig:chia:zz/index.html?salt=${SALT}`;
+  const err = (() => {
+    try {
+      parseUrn(bad);
+      return null;
+    } catch (e) {
+      return e; // must be reachable — a fatal recursion crash never gets here
+    }
+  })();
+  assert.ok(err instanceof DigSdkError && err.code === "INVALID_ARGUMENT");
+  assert.ok(
+    !serializeErrorFull(err).includes(SALT),
+    `salt leaked from a malformed-URN error: ${serializeErrorFull(err)}`,
+  );
+});
+
+test("a non-URN context string containing salt= is redacted, no crash (#2303)", () => {
+  const SALT = "cafebabe".repeat(4);
+  // A bare `salt=<secret>` with no leading `?`/`&` and no surrounding URN structure.
+  const err = new DigSdkError("RPC_ERROR", "boom", {
+    detail: `connection failed while fetching salt=${SALT} from peer`,
+  });
+  assert.ok(
+    !serializeErrorFull(err).includes(SALT),
+    `salt leaked from a plain context string: ${serializeErrorFull(err)}`,
+  );
 });
