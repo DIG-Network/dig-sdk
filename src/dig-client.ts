@@ -68,6 +68,27 @@ const RPC_CHUNK_BYTES = 3 * 1024 * 1024;
 // NOTE: this bound is chosen by the SDK, not yet a normative protocol constant — see SPEC.md.
 const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 
+// Ceiling on the ciphertext carried by a SINGLE `dig.getContent` response, enforced before the
+// base64 decode allocates (#2517). The aggregate `MAX_RESOURCE_BYTES` ceiling above bounds the
+// reassembly buffer but says nothing about one response, so an untrusted node could declare a
+// 100-byte resource and answer with hundreds of megabytes — an O(response) allocation on every
+// request, which is a browser tab's memory rather than a disk quota.
+//
+// The client ASKS for `RPC_CHUNK_BYTES`, so a conforming node never exceeds it and the honest
+// bound is 3 MiB. Doubling it is deliberate slack in the SAFE direction: refusing content a
+// legitimate node serves would break real reads, while 6 MiB is still ~85x below the aggregate
+// ceiling and small enough that repeated hostile responses cannot exhaust a tab. A node needing
+// more per response is misbehaving by its own protocol.
+const MAX_RESPONSE_CIPHERTEXT_BYTES = 2 * RPC_CHUNK_BYTES;
+
+// Ceiling on how many `dig.getContent` pages one resource may take (#2517). The strict
+// forward-progress check below already stops a node that repeats an offset forever; this bounds
+// the remaining spin — a node that advances by a single byte per page would otherwise make half a
+// billion round trips while satisfying "progress". At the requested 3 MiB per page a 512 MiB
+// resource needs 171 pages, so 4096 tolerates a node chunking 24x finer than asked before it is
+// treated as hostile: generous to slow-but-honest nodes, still a hard bound.
+const MAX_CONTENT_PAGES = 4096;
+
 /** Options to construct a DigClient. */
 export interface DigClientOptions {
   /**
@@ -475,7 +496,14 @@ export class DigClient {
     let buf: Uint8Array | null = null;
     let proof = "";
     let chunkLens: number[] | null = null;
-    for (;;) {
+    for (let page = 0; ; page++) {
+      if (page >= MAX_CONTENT_PAGES) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          `The content network did not finish serving this resource within ${MAX_CONTENT_PAGES} chunks; refusing to keep paging.`,
+          { rpcMethod: "dig.getContent", pages: page, maxPages: MAX_CONTENT_PAGES },
+        );
+      }
       const r = await this.rpcCall<GetContentResult>(rpc, "dig.getContent", {
         store_id: storeId,
         root,
@@ -528,7 +556,22 @@ export class DigClient {
       if (chunkLens === null && Array.isArray(r.chunk_lens)) {
         chunkLens = r.chunk_lens.map((n) => n >>> 0);
       }
-      const chunk = b64ToBytes(r.ciphertext ?? "");
+      const b64 = r.ciphertext ?? "";
+      // Bound the DECODE, not just the aggregate: base64 carries 3 bytes per 4 characters, so the
+      // encoded length tells us the allocation size before we make it (#2517).
+      const decodedBytes = Math.floor((b64.length * 3) / 4);
+      if (decodedBytes > MAX_RESPONSE_CIPHERTEXT_BYTES) {
+        throw new DigSdkError(
+          "RESOURCE_TOO_LARGE",
+          `The content network returned a ${decodedBytes}-byte chunk, above the ${MAX_RESPONSE_CIPHERTEXT_BYTES}-byte per-response ceiling; refusing to decode.`,
+          {
+            rpcMethod: "dig.getContent",
+            chunkLength: decodedBytes,
+            maxChunkLength: MAX_RESPONSE_CIPHERTEXT_BYTES,
+          },
+        );
+      }
+      const chunk = b64ToBytes(b64);
       const at = r.offset >>> 0;
       buf!.set(
         chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))),
@@ -536,7 +579,19 @@ export class DigClient {
       );
       if (r.inclusion_proof) proof = r.inclusion_proof;
       if (r.complete || r.next_offset == null) break;
-      offset = r.next_offset >>> 0;
+      // Require STRICT forward progress. A node repeating (or rewinding) an offset while holding
+      // `complete: false` would otherwise spin the client forever on a well-formed-looking reply
+      // (#2517) — the cheapest possible hang, and the §5.3 ladder makes an unauthenticated local
+      // node the default endpoint for a Node consumer.
+      const next = r.next_offset >>> 0;
+      if (next <= offset) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          `The content network returned a non-advancing next_offset (${next} after ${offset}); refusing to loop.`,
+          { rpcMethod: "dig.getContent", offset, nextOffset: next },
+        );
+      }
+      offset = next;
     }
     return { ciphertext: buf ?? new Uint8Array(0), proof, chunkLens };
   }
