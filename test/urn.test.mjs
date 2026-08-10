@@ -8,6 +8,7 @@ import {
   isUrn,
   reconstructUrn,
   reconstructUrnWithRoot,
+  DigSdkError,
 } from "../dist/index.js";
 
 const STORE = "ab".repeat(32); // 64 hex
@@ -65,4 +66,69 @@ test("reconstructUrnWithRoot: root-pinned display URN", () => {
     reconstructUrnWithRoot(STORE, ROOT, "x.txt"),
     `urn:dig:chia:${STORE}:${ROOT}/x.txt`,
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// #2518 — a salt that is NOT the final URN component must still be redacted.
+//
+// URN_RE's optional `?salt=` group only captures a salt in FINAL position. A URN with a trailing
+// `&x=1`, a `#fragment`, or a rooted form with a trailing param still MATCHES the regex (the
+// resource-key group absorbs the query tail) with the salt group ABSENT — so the pre-fix redactor
+// took the "well-formed URN, nothing to redact" path and returned the string untouched, publishing
+// the out-of-band secret that makes a private store private into any serialized error.
+//
+// These assert on the RENDERED output a consumer actually sees (message + toJSON + context), not
+// on the redaction helper — a test that only checks the helper is blind to any other path that
+// renders the raw value.
+// ---------------------------------------------------------------------------------------------
+const NF_SALT = "c0ffee".repeat(6); // 36-hex, distinctive + greppable
+
+// Everything a consumer can realistically log from a caught error.
+function renderError(err) {
+  return [
+    err.message,
+    JSON.stringify(err.toJSON()),
+    JSON.stringify(err.context),
+  ].join("\n");
+}
+
+const NON_FINAL_SALT_URNS = [
+  ["trailing & param", `urn:dig:chia:${STORE}/a.txt?salt=${NF_SALT}&x=1`],
+  ["trailing #fragment", `urn:dig:chia:${STORE}/a.txt?salt=${NF_SALT}#frag`],
+  ["rooted + trailing param", `urn:dig:chia:${STORE}:${ROOT}/a.txt?salt=${NF_SALT}&v=2`],
+];
+
+for (const [label, urn] of NON_FINAL_SALT_URNS) {
+  test(`a non-final salt (${label}) never reaches a rendered error (#2518)`, () => {
+    const err = new DigSdkError("INVALID_ARGUMENT", "bad urn", { value: urn });
+    const rendered = renderError(err);
+    assert.ok(!rendered.includes(NF_SALT), `salt leaked into a rendered error: ${rendered}`);
+    assert.ok(rendered.includes("<redacted>"));
+  });
+}
+
+test("a salt inside the resource key is redacted alongside a final salt (#2518)", () => {
+  const inner = "aaaa1111".repeat(4);
+  const trailing = "bbbb2222".repeat(4);
+  const err = new DigSdkError("INVALID_ARGUMENT", "bad urn", {
+    value: `urn:dig:chia:${STORE}/a?salt=${inner}&b=1?salt=${trailing}`,
+  });
+  const rendered = renderError(err);
+  assert.ok(!rendered.includes(inner), `inner salt leaked: ${rendered}`);
+  assert.ok(!rendered.includes(trailing), `trailing salt leaked: ${rendered}`);
+});
+
+test("a cyclic error context does not throw during construction (#2518)", () => {
+  const cyclic = { rpcMethod: "dig.getContent", self: null };
+  cyclic.self = cyclic;
+  const nested = { a: [cyclic], b: cyclic };
+  let err;
+  assert.doesNotThrow(() => {
+    err = new DigSdkError("RPC_MALFORMED_RESPONSE", "cyclic context", nested);
+  });
+  // The cycle is preserved by identity (not cloned into an infinite tree) and the acyclic fields
+  // still round-trip, so the guard costs no fidelity.
+  assert.equal(err.context.a[0].rpcMethod, "dig.getContent");
+  assert.equal(err.context.b, err.context.a[0]);
+  assert.equal(err.context.b.self, err.context.b);
 });
