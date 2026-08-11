@@ -263,7 +263,7 @@ a trailing segment is NOT assumed to be a query.
   `report?year=2024.csv?salt=ff00ff00` would split at its FIRST `?` and truncate a real,
   already-published key to `report`.
 - **Where the salt sits INSIDE the chosen query.** Once a `?` has been judged to start the query,
-  every later `?` is *inside* the query and is a separator: within that tail, `salt=` counts at the
+  every later `?` is _inside_ the query and is a separator: within that tail, `salt=` counts at the
   start, after an `&`, **and** after a `?`. So `a?salt=zz?salt=ff00ff00` carries the salt
   `ff00ff00` — a parser honouring only `&` here derives no salt at all and silently cannot decrypt.
 
@@ -277,7 +277,7 @@ appended after a second `?` (`report?year=2024.csv?salt=<hex>`) is the grammar's
 recognized. When more than one `?` carries a boundary `salt=`, the FIRST such `?` wins — it strips the
 most, so no later `salt=` can survive inside `<resource_key>`.
 
-A parser MUST NOT recognize the query with a broader test than it recognizes a *qualifying* `salt=`.
+A parser MUST NOT recognize the query with a broader test than it recognizes a _qualifying_ `salt=`.
 Splitting on an unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a
 different retrieval key for content that is already published on chain — unreadable, and unmigratable.
 `report?year=2024.csv` and `notes#1.md` are likewise valid, working keys, and a parser that strips

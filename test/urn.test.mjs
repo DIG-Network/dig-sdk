@@ -159,16 +159,18 @@ test("a URN with 128k question marks parses in linear time (#2719)", () => {
   const started = Date.now();
   isUrn(urn);
   const elapsed = Date.now() - started;
-  assert.ok(elapsed < 100, `isUrn took ${elapsed}ms on a ${urn.length}-byte URN`);
+  assert.ok(
+    elapsed < 100,
+    `isUrn took ${elapsed}ms on a ${urn.length}-byte URN`,
+  );
 });
 
 // The rewrite above is a PERFORMANCE change and must decide every input exactly as the rule reads.
 // A hand-picked case list cannot show that, so both implementations are swept over a generated
 // space of separator/value/position combinations and compared field for field.
 test("the linear split agrees with the reference rule on every generated input (#2719)", async () => {
-  const { referenceParse, actualParse, generatedTails } = await import(
-    "./urn-splitquery-equivalence.mjs"
-  );
+  const { referenceParse, actualParse, generatedTails } =
+    await import("./urn-splitquery-equivalence.mjs");
   let compared = 0;
   const differences = [];
   for (const tail of generatedTails()) {
@@ -226,9 +228,8 @@ test("a '?'-borne salt does NOT decide which '?' starts the query (#2719)", () =
 // the change safe — the resource key is never affected (only the salt is), and no input that had a
 // usable salt before loses it.
 test("widening the salt scanner changes only salts, and takes none away (#2719)", async () => {
-  const { referenceParse, narrowParse, generatedTails } = await import(
-    "./urn-splitquery-equivalence.mjs"
-  );
+  const { referenceParse, narrowParse, generatedTails } =
+    await import("./urn-splitquery-equivalence.mjs");
   let compared = 0;
   let changed = 0;
   const keyChanges = [];
@@ -250,6 +251,13 @@ test("widening the salt scanner changes only salts, and takes none away (#2719)"
     }
   }
   assert.deepEqual(keyChanges, [], "the widening moved a resource key");
-  assert.deepEqual(saltsLost, [], "the widening removed a previously-read salt");
-  assert.ok(changed > 0, `the widening changed nothing across ${compared} inputs`);
+  assert.deepEqual(
+    saltsLost,
+    [],
+    "the widening removed a previously-read salt",
+  );
+  assert.ok(
+    changed > 0,
+    `the widening changed nothing across ${compared} inputs`,
+  );
 });

@@ -296,5 +296,8 @@ test("a null __proto__ value leaves the redacted context usable (#2719)", () => 
   assert.doesNotThrow(() =>
     Object.prototype.hasOwnProperty.call(err.context, "rpcMethod"),
   );
-  assert.equal(err.context.hasOwnProperty("rpcMethod"), true);
+  // Called as consumer code would — off the object, through its inherited prototype.
+  const hasOwn = err.context["hasOwnProperty"];
+  assert.equal(typeof hasOwn, "function");
+  assert.equal(hasOwn.call(err.context, "rpcMethod"), true);
 });

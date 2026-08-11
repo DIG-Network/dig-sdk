@@ -1370,7 +1370,8 @@ test("a getReader stream of STRING chunks cannot disable the response ceiling (#
       getReader() {
         return {
           async read() {
-            if (meter.produced >= total) return { done: true, value: undefined };
+            if (meter.produced >= total)
+              return { done: true, value: undefined };
             meter.produced += chunk.length;
             return { done: false, value: chunk };
           },
