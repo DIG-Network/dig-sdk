@@ -863,10 +863,15 @@ class ChunkBudget {
    * but is not an error; a real stream may legitimately emit one.
    */
   accept(value: unknown): void {
-    const bytes = asBytes(value);
-    // A chunk whose size cannot be measured must REFUSE, never continue: silently skipping it leaves
-    // the reader pulling the rest of an unbounded body with nothing counting it. Failing closed on a
-    // shape we cannot account for is the only safe direction for a size guard.
+    // NORMALIZE FIRST, MEASURE SECOND. The three defects this budget has now had — a NaN
+    // `byteLength`, a forged prototype, a retained view aliasing the producer's buffer — were one
+    // defect: the budget measured a number the PRODUCER still owned. `copyChunkBytes` returns bytes
+    // in a buffer WE allocated, so the length measured below is a fact about our own memory and the
+    // whole class stops being expressible rather than needing a fourth point fix.
+    const bytes = copyChunkBytes(value);
+    // A chunk whose bytes cannot be obtained must REFUSE, never continue: silently skipping it
+    // leaves the reader pulling the rest of an unbounded body with nothing counting it. Failing
+    // closed on a shape we cannot account for is the only safe direction for a size guard.
     if (bytes === null) {
       throw new DigSdkError(
         "RPC_MALFORMED_RESPONSE",
@@ -876,6 +881,10 @@ class ChunkBudget {
     }
     if (bytes.byteLength === 0) return;
     this.read += bytes.byteLength;
+    // THE CEILING NOW RUNS AFTER A COPY, so one oversized chunk is copied before it is refused. The
+    // peak is therefore bounded at MAX + one chunk rather than MAX exactly — the deliberate price of
+    // a count that describes memory we own. It replaces the previous "refused before any copy"
+    // property, which was only ever true of a count the producer could falsify.
     if (this.read > MAX_RPC_RESPONSE_BYTES) {
       throw tooLargeError(
         this.res,
@@ -883,24 +892,9 @@ class ChunkBudget {
         `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
       );
     }
-    // COPY, never retain the caller's view. `asBytes` returns a view OVER THE PRODUCER'S
-    // `ArrayBuffer`, so keeping it pins that entire backing buffer for as long as this budget lives
-    // — and the budget counts the VIEW's length, not the buffer's. A producer yielding one-byte
-    // views over 32 MiB buffers therefore costs 1 byte of budget and 32 MiB of memory each:
-    // measured at 48 counted bytes holding 1,536 MiB resident, with the read SUCCEEDING because the
-    // 16 MiB ceiling was never approached. The amplification factor is `backing / counted` and the
-    // budget permits ~16.7M one-byte chunks, so it is unbounded.
-    //
-    // This is NOT an exotic-input-only concern: a stock Node `Readable` pools its `Buffer`s, so the
-    // node-fetch-shaped path this budget was written for already amplifies ~1024x with no attacker
-    // involved. (A native `undici` fetch measures 1.0.)
-    //
-    // Copying makes retained memory equal to counted bytes, which is what the ceiling claims to
-    // bound. It also makes `finish()` safe against a producer that detaches a chunk's buffer after
-    // it was counted — `concatBytes` re-reads `byteLength` at copy time, and our own copies cannot
-    // be detached. The ceiling check above runs FIRST, so an oversized body is refused before any
-    // copy is made.
-    this.chunks.push(bytes.slice());
+    // Already a copy — retaining it pins nothing of the producer's, and a producer that later
+    // detaches or overwrites its own buffer cannot change what we counted.
+    this.chunks.push(bytes);
   }
 
   /** The accepted chunks flattened into one contiguous buffer. */
@@ -952,27 +946,95 @@ async function readBudgeted(
   return budget.finish();
 }
 
-/**
- * A stream chunk as bytes — any typed-array view (`Uint8Array`, `Buffer`, `DataView`) or a string —
- * else `null`.
- *
- * `ArrayBuffer.isView` FIRST, and deliberately NO `instanceof` anywhere. `instanceof` is a
- * prototype-chain check, not an internal-slot check, so `Object.create(Uint8Array.prototype)`
- * carrying a poisoned `byteLength` getter satisfies it — and a chunk whose size lies by returning
- * `NaN` or a negative number walks the byte counter off the rails and disables the ceiling for the
- * REST of the body. `isView` interrogates the internal slot and cannot be forged.
- *
- * The invariant the caller depends on: this ALWAYS returns a freshly constructed view, never the
- * caller's object, so the `byteLength` the budget accumulates is one this function computed and a
- * hostile chunk cannot influence. Returning `value` directly for the common case would be a
- * micro-optimisation that reopens exactly this hole.
- */
-function asBytes(value: unknown): Uint8Array | null {
-  if (ArrayBuffer.isView(value)) {
-    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+// The intrinsic accessors for a view's internal slots.
+//
+// `value.byteLength` is an ordinary property lookup, and a GENUINE subclass may override it while
+// every internal slot stays truthful:
+//
+//     class Evil extends Uint8Array { get byteLength() { return 0; } }
+//
+// It satisfies `ArrayBuffer.isView` — correctly, since it really is a view — and then reports 0.
+// Measured: 4.00 GiB drained against the 16 MiB ceiling in 83 ms with 0 counted bytes. `buffer` and
+// `byteOffset` are poisonable the same way. Calling the %TypedArray%.prototype getters instead reads
+// the slots themselves, which no subclass can shadow; they also throw on a foreign receiver, which
+// is what makes them a brand check as well as an accessor.
+//
+// `DataView` keeps its equivalents on a DIFFERENT intrinsic (`DataView.prototype`), and a `DataView`
+// is a legal chunk shape, so both are needed.
+const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype) as object;
+
+function slotGetter(proto: object, name: string): (this: unknown) => never {
+  const get = Object.getOwnPropertyDescriptor(proto, name)?.get;
+  /* c8 ignore next 3 -- unreachable on any conforming runtime; the throw exists so a missing
+     intrinsic fails loudly at load rather than silently degrading the guard to property reads. */
+  if (typeof get !== "function") {
+    throw new Error(`this runtime has no intrinsic ${name} getter`);
   }
-  if (typeof value === "string") return new TextEncoder().encode(value);
+  return get as (this: unknown) => never;
+}
+
+const TA_BUFFER = slotGetter(TYPED_ARRAY_PROTO, "buffer");
+const TA_BYTE_OFFSET = slotGetter(TYPED_ARRAY_PROTO, "byteOffset");
+const TA_BYTE_LENGTH = slotGetter(TYPED_ARRAY_PROTO, "byteLength");
+const DV_BUFFER = slotGetter(DataView.prototype, "buffer");
+const DV_BYTE_OFFSET = slotGetter(DataView.prototype, "byteOffset");
+const DV_BYTE_LENGTH = slotGetter(DataView.prototype, "byteLength");
+
+/** The window a view really describes, read from its internal slots — or null if it is neither kind. */
+function viewSlots(
+  view: unknown,
+): { buffer: ArrayBufferLike; byteOffset: number; byteLength: number } | null {
+  for (const [buffer, offset, length] of [
+    [TA_BUFFER, TA_BYTE_OFFSET, TA_BYTE_LENGTH],
+    [DV_BUFFER, DV_BYTE_OFFSET, DV_BYTE_LENGTH],
+  ] as const) {
+    try {
+      // A getter called on the wrong kind of view throws, which is precisely the brand check: the
+      // TypedArray getters reject a DataView and vice versa, so the first pair that answers is the
+      // right one. A detached buffer also lands here (length 0), and is refused by the copy below.
+      return {
+        buffer: buffer.call(view) as unknown as ArrayBufferLike,
+        byteOffset: offset.call(view) as unknown as number,
+        byteLength: length.call(view) as unknown as number,
+      };
+    } catch {
+      /* not this kind of view — try the other intrinsic */
+    }
+  }
   return null;
+}
+
+/**
+ * A stream chunk copied into bytes THIS MODULE OWNS — any typed-array view (`Uint8Array`, `Buffer`,
+ * `DataView`) or a string — else `null`.
+ *
+ * Every property a hostile chunk could poison is read through the intrinsic slot getters above, and
+ * the result is a fresh buffer, so the caller's accounting describes its own memory rather than a
+ * number the producer supplied. This is the ONE copy: the budget retains what this returns.
+ *
+ * `null` (a refusal) covers a non-view non-string, and also a view whose buffer has been detached —
+ * constructing over a detached buffer throws, and a size guard must answer that with a coded
+ * refusal rather than an uncoded `TypeError`.
+ */
+function copyChunkBytes(value: unknown): Uint8Array | null {
+  if (typeof value === "string") return new TextEncoder().encode(value);
+  if (!ArrayBuffer.isView(value)) return null;
+  const slots = viewSlots(value);
+  if (slots === null) return null;
+  try {
+    // Two steps, one copy: the inner view is our own honest window onto the producer's buffer, and
+    // `.slice()` on it — a real `Uint8Array`, so a real `%TypedArray%.prototype.slice` — allocates
+    // the buffer we keep. Copying out of a `SharedArrayBuffer` also closes a TOCTOU where a
+    // concurrent writer mutates bytes after they were counted.
+    return new Uint8Array(
+      slots.buffer,
+      slots.byteOffset,
+      slots.byteLength,
+    ).slice();
+  } catch {
+    // Detached, or a length the runtime rejects. Unmeasurable is refused, never skipped.
+    return null;
+  }
 }
 
 /**

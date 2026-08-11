@@ -428,6 +428,14 @@ is just opaque bytes that fail to decrypt.
   answer with an arbitrarily large body. 16 MiB is twice the ~8 MiB a base64-encoded 6 MiB
   per-response ciphertext ceiling implies, so every legal response fits.
 
+  A chunk's size MUST be established from the view's INTERNAL SLOTS, never from its `byteLength`,
+  `buffer` or `byteOffset` properties: a genuine `Uint8Array` subclass may override any of them while
+  satisfying `ArrayBuffer.isView`, and a chunk reporting `0` would switch the ceiling off for the
+  whole body. Each chunk is therefore copied into a buffer the SDK owns and the COPY is what is
+  counted, so peak residency is bounded at 16 MiB plus one chunk rather than 16 MiB exactly. A chunk
+  whose bytes cannot be obtained — a non-view, or a detached buffer — MUST be refused with
+  `RPC_MALFORMED_RESPONSE`, never skipped.
+
   The ceiling applies to every body the SDK can MEASURE, not only to a WHATWG stream. `fetch` is an
   injectable option, so `res.body` may be a WHATWG `ReadableStream` (a real `fetch`; read via
   `getReader()`) or a Node `Readable` (`node-fetch` v2, `cross-fetch`; read via `for await`) — both

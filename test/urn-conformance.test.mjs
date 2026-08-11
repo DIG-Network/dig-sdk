@@ -60,10 +60,6 @@ const REQUIRED_COVERAGE = {
   // second-'?' leak ship green: every predicate passed while the secret sat in `resourceKey`.
   "a '?'-in-key WITH a boundary salt (the second-'?' class)": (c) =>
     c.expect.resourceKey?.includes("?") && c.expect.salt,
-  // The SPEC boundary the value scanner used to ignore. Nothing in the table reached it, so the code
-  // and SPEC.md derived different keys for this class with every row still green. The predicate
-  // demands the salt come from the LATER, `?`-borne occurrence — a row whose FIRST occurrence already
-  // supplies the value (`a?salt=aa?salt=bb`) does not exercise it.
   // TWO DISTINCT usable salts in one URN. Every other duplicate-salt predicate above is satisfiable
   // by a row whose two occurrences carry the SAME value (or where only one is hex), and such a row
   // cannot distinguish a first-wins scanner from a last-wins one — the generated sweep was blind to
@@ -73,10 +69,12 @@ const REQUIRED_COVERAGE = {
     const values = [...c.urn.matchAll(/[?&]salt=([0-9a-fA-F]+)/g)].map((m) =>
       m[1].toLowerCase(),
     );
-    return (
-      new Set(values).size > 1 && c.expect.salt === values[0]
-    );
+    return new Set(values).size > 1 && c.expect.salt === values[0];
   },
+  // The SPEC boundary the value scanner used to ignore. Nothing in the table reached it, so the code
+  // and SPEC.md derived different keys for this class with every row still green. The predicate
+  // demands the salt come from the LATER, `?`-borne occurrence — a row whose FIRST occurrence already
+  // supplies the value (`a?salt=aa?salt=bb`) does not exercise it.
   "a chosen query tail carrying a further '?'-borne salt=": (c) => {
     const m = /\?salt=([0-9a-fA-F]*)[^&#]*\?salt=([0-9a-fA-F]+)/.exec(c.urn);
     return Boolean(m) && c.expect.salt === m[2].toLowerCase();

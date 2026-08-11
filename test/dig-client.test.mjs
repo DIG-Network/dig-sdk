@@ -1466,3 +1466,227 @@ test("a retained chunk is COPIED, not a view aliasing the producer's buffer (#25
   });
   assert.deepEqual(res.items, []);
 });
+
+// ---------------------------------------------------------------------------------------------
+// A GENUINE `Uint8Array` subclass can lie about its own size (#2719).
+//
+// `ArrayBuffer.isView` interrogates an internal slot, so it cannot be fooled by a fake object — but
+// it was never the thing that had to be trustworthy. The SIZE was, and `value.byteLength` is an
+// ordinary property lookup a subclass may override while every internal slot stays genuine:
+//
+//     class Evil extends Uint8Array { get byteLength() { return 0; } }
+//
+// Measured at f0e3906: 4.00 GiB drained against the 16 MiB ceiling in 83 ms with 0 counted bytes,
+// and an unbounded stream of such chunks never terminated.
+//
+// The structural answer is not a fourth point fix. All three defects in this budget — NaN
+// `byteLength`, a forged prototype, an aliased buffer — share one root: the budget measured a value
+// the PRODUCER still owned. The order is inverted (normalize into a buffer we own, THEN measure our
+// copy), so the class stops being expressible.
+//
+// The discriminating assertion is BYTES PULLED, not the error code: a bypass here also fails to
+// parse and also raises `RPC_MALFORMED_RESPONSE`.
+// ---------------------------------------------------------------------------------------------
+
+/** A `fetch` yielding `firstChunk()` once, then real 1 MiB buffers until `cap`, metering as it goes. */
+function meteredChunkFetch(firstChunk, meter, cap = 64 * 1024 * 1024) {
+  return async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield firstChunk();
+        while (meter.produced < cap) {
+          meter.produced += 1 << 20;
+          yield Buffer.alloc(1 << 20, 0x20);
+        }
+      },
+    },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+}
+
+class LyingLength extends Uint8Array {
+  get byteLength() {
+    return 0;
+  }
+}
+
+test("a genuine Uint8Array SUBCLASS that lies about byteLength cannot disable the ceiling (#2719)", async () => {
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: meteredChunkFetch(() => new LyingLength(1024), meter),
+  });
+  // The refusal must be CODED. `assert.rejects` alone is satisfied by a raw `RangeError` thrown
+  // while constructing a view over a poisoned buffer, which is a crash, not a guard.
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError,
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `a lying subclass disabled the ceiling: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a stream of nothing but lying chunks still terminates on the ceiling (#2719)", async () => {
+  // The test above proves the ceiling still fires when honest chunks follow. This proves the COUNT
+  // is truthful: with every chunk reporting 0, a budget that trusts the report never terminates.
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            meter.produced += 1 << 20;
+            if (meter.produced > 256 * 1024 * 1024) {
+              throw new Error("the ceiling never fired on lying chunks");
+            }
+            yield new LyingLength(1 << 20);
+          }
+        },
+      },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    }),
+  });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+  assert.ok(
+    meter.produced <= 32 * 1024 * 1024,
+    `counted far too little before refusing: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a subclass lying about buffer/byteOffset cannot smuggle bytes past the count (#2719)", async () => {
+  // `byteLength` is not the only poisonable accessor: `buffer` and `byteOffset` are read the same
+  // way, so reading internal slots must make all three untrusted.
+  class LyingWindow extends Uint8Array {
+    get byteOffset() {
+      return 0;
+    }
+    get buffer() {
+      return new ArrayBuffer(8);
+    }
+  }
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: meteredChunkFetch(() => new LyingWindow(1024), meter),
+  });
+  // The refusal must be CODED. `assert.rejects` alone is satisfied by a raw `RangeError` thrown
+  // while constructing a view over a poisoned buffer, which is a crash, not a guard.
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError,
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `poisoned buffer/byteOffset disabled the ceiling: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a detached chunk buffer is refused with a coded error (#2719)", async () => {
+  const dig = new DigClient({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          const buf = new ArrayBuffer(64);
+          const view = new Uint8Array(buf);
+          structuredClone(buf, { transfer: [buf] }); // detaches `buf`
+          yield view;
+        },
+      },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    }),
+  });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) =>
+      e instanceof DigSdkError &&
+      e.code === "RPC_MALFORMED_RESPONSE" &&
+      /cannot be bounded/.test(e.message),
+  );
+});
+
+test("a Proxy over a Buffer cannot be counted as zero while its content is kept (#2719)", async () => {
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: meteredChunkFetch(
+      () =>
+        new Proxy(Buffer.alloc(1024), {
+          get: (t, p) => (p === "byteLength" ? 0 : Reflect.get(t, p)),
+        }),
+      meter,
+    ),
+  });
+  // The refusal must be CODED. `assert.rejects` alone is satisfied by a raw `RangeError` thrown
+  // while constructing a view over a poisoned buffer, which is a crash, not a guard.
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError,
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `a proxied chunk disabled the ceiling: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("legitimate chunk shapes are still accepted after the inversion (#2719)", async () => {
+  // The refusal must not widen. `Buffer` is itself a `Uint8Array` subclass (it simply does not lie),
+  // and `DataView`, SAB-backed views, empty chunks, split views and strings are all legal body
+  // shapes a real embedder produces.
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { items: [], total: 0 },
+  });
+  const bytes = new TextEncoder().encode(payload);
+  const sab = new SharedArrayBuffer(bytes.length);
+  new Uint8Array(sab).set(bytes);
+
+  const shapes = {
+    Buffer: () => [Buffer.from(payload)],
+    DataView: () => [new DataView(bytes.slice().buffer)],
+    "SharedArrayBuffer-backed view": () => [new Uint8Array(sab)],
+    string: () => [payload],
+    "empty chunks interleaved": () => [
+      new Uint8Array(0),
+      Buffer.from(payload),
+      new Uint8Array(0),
+    ],
+    "split across offset views": () => [
+      bytes.subarray(0, 5),
+      bytes.subarray(5),
+    ],
+  };
+  for (const [label, make] of Object.entries(shapes)) {
+    const dig = new DigClient({
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        body: {
+          async *[Symbol.asyncIterator]() {
+            for (const c of make()) yield c;
+          },
+        },
+        json: async () => {
+          throw new Error("res.json() must not be reached");
+        },
+      }),
+    });
+    const res = await dig.listCollectionItems({
+      storeId: STORE,
+      collection: "c",
+    });
+    assert.deepEqual(res.items, [], `${label} was not accepted`);
+  }
+});
