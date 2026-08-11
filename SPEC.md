@@ -431,10 +431,20 @@ is just opaque bytes that fail to decrypt.
   A chunk's size MUST be established from the view's INTERNAL SLOTS, never from its `byteLength`,
   `buffer` or `byteOffset` properties: a genuine `Uint8Array` subclass may override any of them while
   satisfying `ArrayBuffer.isView`, and a chunk reporting `0` would switch the ceiling off for the
-  whole body. Each chunk is therefore copied into a buffer the SDK owns and the COPY is what is
-  counted, so peak residency is bounded at 16 MiB plus one chunk rather than 16 MiB exactly. A chunk
-  whose bytes cannot be obtained — a non-view, or a detached buffer — MUST be refused with
-  `RPC_MALFORMED_RESPONSE`, never skipped.
+  whole body.
+
+  A chunk MUST be refused BEFORE it is copied when its own size already exceeds the remaining
+  budget. Because the slot-derived size cannot be falsified, the ceiling does not need the copy in
+  order to be enforced — and it must not wait for it: deferring the check until after the copy makes
+  the bound "16 MiB plus one chunk", which is vacuous while nothing bounds one chunk. A single chunk
+  at the runtime's allocation limit would exhaust memory before the guard ran. For a string chunk the
+  bound is its `length`, a true LOWER bound on its UTF-8 size (at least one byte per UTF-16 code
+  unit), so refusing on it can never reject a body that would have fit.
+
+  Each accepted chunk is then copied into a buffer the SDK owns, and the COPY is what is counted and
+  retained — so a producer cannot pin memory the budget never counted, nor change what was counted
+  after the fact. A chunk whose bytes cannot be obtained — a non-view, or a detached buffer — MUST be
+  refused with `RPC_MALFORMED_RESPONSE`, never skipped.
 
   The ceiling applies to every body the SDK can MEASURE, not only to a WHATWG stream. `fetch` is an
   injectable option, so `res.body` may be a WHATWG `ReadableStream` (a real `fetch`; read via

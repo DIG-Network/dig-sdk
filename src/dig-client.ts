@@ -868,6 +868,21 @@ class ChunkBudget {
     // defect: the budget measured a number the PRODUCER still owned. `copyChunkBytes` returns bytes
     // in a buffer WE allocated, so the length measured below is a fact about our own memory and the
     // whole class stops being expressible rather than needing a fourth point fix.
+    // REFUSE BEFORE COPYING when the chunk's own size already blows the budget. `viewSlots` yields
+    // a size the producer CANNOT falsify, so the ceiling does not have to wait for the copy — and
+    // it must not, because "MAX + one chunk" is a vacuous bound when nothing bounds one chunk.
+    // Measured with the check absent: a single 256 MiB chunk peaked at 512 MiB resident, 1 GiB at
+    // 2 GiB, 2 GiB at 4 GiB — linear in chunk size, 256x the ceiling, with `RESOURCE_TOO_LARGE`
+    // fired only afterwards. One chunk at V8's ArrayBuffer limit would OOM the process before the
+    // guard ran, from an untrusted node on the §5.3 default-local-node path.
+    const declared = declaredChunkBytes(value);
+    if (declared !== null && this.read + declared > MAX_RPC_RESPONSE_BYTES) {
+      throw tooLargeError(
+        this.res,
+        this.method,
+        `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
+      );
+    }
     const bytes = copyChunkBytes(value);
     // A chunk whose bytes cannot be obtained must REFUSE, never continue: silently skipping it
     // leaves the reader pulling the rest of an unbounded body with nothing counting it. Failing
@@ -1016,6 +1031,27 @@ function viewSlots(
  * constructing over a detached buffer throws, and a size guard must answer that with a coded
  * refusal rather than an uncoded `TypeError`.
  */
+/**
+ * A LOWER bound on the bytes a chunk will contribute, read without copying it — or `null` when the
+ * chunk's shape is unknown and only {@link copyChunkBytes} can answer.
+ *
+ * A lower bound is exactly what a pre-copy refusal needs: exceeding it proves the chunk exceeds the
+ * budget, so refusing is always correct and can never reject a body that would have fit.
+ *
+ * - A view's size comes from the intrinsic slot getters, which a hostile subclass cannot falsify,
+ *   so for views the bound is also EXACT.
+ * - A string's UTF-8 encoding is at least one byte per UTF-16 code unit (ASCII is exactly one; every
+ *   other code unit costs more), so `length` is a true lower bound. Using it rather than a `* 3`
+ *   upper bound is what keeps a 6 MiB ASCII body from being refused as if it were 18 MiB. It also
+ *   bounds the encode that follows to at most three times the REMAINING budget instead of leaving it
+ *   unbounded.
+ */
+function declaredChunkBytes(value: unknown): number | null {
+  if (typeof value === "string") return value.length;
+  if (!ArrayBuffer.isView(value)) return null;
+  return viewSlots(value)?.byteLength ?? null;
+}
+
 function copyChunkBytes(value: unknown): Uint8Array | null {
   if (typeof value === "string") return new TextEncoder().encode(value);
   if (!ArrayBuffer.isView(value)) return null;

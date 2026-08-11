@@ -1690,3 +1690,83 @@ test("legitimate chunk shapes are still accepted after the inversion (#2719)", a
     assert.deepEqual(res.items, [], `${label} was not accepted`);
   }
 });
+
+test("an oversized chunk is refused BEFORE it is copied (#2517)", async () => {
+  // "MAX + one chunk" is a vacuous bound when nothing bounds one chunk. With the pre-copy check
+  // absent, the whole chunk was copied and only then refused: measured 256 MiB -> 512 MiB resident,
+  // 1 GiB -> 2 GiB, 2 GiB -> 4 GiB. One chunk at V8's ArrayBuffer limit OOMs the process before the
+  // guard runs — a remote OOM from the §5.3 default local node.
+  //
+  // Measure `arrayBuffers` AT THE THROW, before the copy can be collected: a copy that happened is
+  // still resident there. Asserting the error code alone cannot see this — the refusal fires either
+  // way, just too late.
+  const CHUNK = 64 * 1024 * 1024;
+  for (const kind of ["view", "string"]) {
+    let atThrow = null;
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          yield kind === "string"
+            ? " ".repeat(CHUNK)
+            : new Uint8Array(CHUNK).fill(0x20);
+        },
+      },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    });
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+      (e) => {
+        atThrow = process.memoryUsage().arrayBuffers;
+        return e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE";
+      },
+    );
+    assert.ok(
+      atThrow < CHUNK * 1.5,
+      `${kind}: chunk was copied before refusal (${Math.round(atThrow / 1048576)} MiB resident at throw)`,
+    );
+  }
+});
+
+test("the pre-copy bound never refuses a body that would have fit (#2517)", async () => {
+  // The control for the check above. The string leg refuses on `length`, a LOWER bound on the UTF-8
+  // size — which is why it must be `length` and not a `length * 3` upper bound: a 6 MiB ASCII body
+  // would otherwise be rejected as though it were 18 MiB. Non-ASCII is the case that proves the
+  // bound is a lower one: 'é' is one UTF-16 code unit and two UTF-8 bytes.
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { items: [], total: 0 },
+  });
+  for (const kind of ["view", "string", "accented"]) {
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          // A megabyte of legal leading whitespace, then the payload — comfortably inside the
+          // budget on every leg, including the one whose bytes exceed its code-unit count.
+          if (kind === "view") yield new Uint8Array(1 << 20).fill(0x20);
+          else if (kind === "string") yield " ".repeat(1 << 20);
+          else yield "é".repeat(1 << 19).replace(/é/g, " ");
+          yield Buffer.from(payload);
+        },
+      },
+      json: async () => {
+        throw new Error(
+          "res.json() must not be reached: the body is measurable",
+        );
+      },
+    });
+    const dig = new DigClient({ fetch: fetchImpl });
+    const res = await dig.listCollectionItems({
+      storeId: STORE,
+      collection: "c",
+    });
+    assert.deepEqual(res.items, [], `${kind} was refused but should have fit`);
+  }
+});
