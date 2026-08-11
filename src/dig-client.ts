@@ -745,17 +745,20 @@ export class DigClient {
 async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
   const body: ReadableStream<Uint8Array> | null | undefined = res.body;
   if (!body || typeof body.getReader !== "function") {
-    const cl = Number(res.headers.get("content-length"));
-    if (Number.isFinite(cl) && cl > MAX_RPC_RESPONSE_BYTES) {
-      throw new DigSdkError(
-        "RESOURCE_TOO_LARGE",
-        `dig RPC ${method} declared content-length ${cl} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
-        {
-          rpcMethod: method,
-          httpStatus: res.status,
-          maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
-        },
-      );
+    const clHeader = res.headers.get("content-length");
+    if (clHeader) {
+      const cl = Number(clHeader);
+      if (Number.isFinite(cl) && cl > MAX_RPC_RESPONSE_BYTES) {
+        throw new DigSdkError(
+          "RESOURCE_TOO_LARGE",
+          `dig RPC ${method} declared content-length ${cl} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
+          {
+            rpcMethod: method,
+            httpStatus: res.status,
+            maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
+          },
+        );
+      }
     }
     return (await res.json()) as T;
   }
