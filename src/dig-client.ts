@@ -882,7 +882,24 @@ class ChunkBudget {
         `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
       );
     }
-    this.chunks.push(bytes);
+    // COPY, never retain the caller's view. `asBytes` returns a view OVER THE PRODUCER'S
+    // `ArrayBuffer`, so keeping it pins that entire backing buffer for as long as this budget lives
+    // — and the budget counts the VIEW's length, not the buffer's. A producer yielding one-byte
+    // views over 32 MiB buffers therefore costs 1 byte of budget and 32 MiB of memory each:
+    // measured at 48 counted bytes holding 1,536 MiB resident, with the read SUCCEEDING because the
+    // 16 MiB ceiling was never approached. The amplification factor is `backing / counted` and the
+    // budget permits ~16.7M one-byte chunks, so it is unbounded.
+    //
+    // This is NOT an exotic-input-only concern: a stock Node `Readable` pools its `Buffer`s, so the
+    // node-fetch-shaped path this budget was written for already amplifies ~1024x with no attacker
+    // involved. (A native `undici` fetch measures 1.0.)
+    //
+    // Copying makes retained memory equal to counted bytes, which is what the ceiling claims to
+    // bound. It also makes `finish()` safe against a producer that detaches a chunk's buffer after
+    // it was counted — `concatBytes` re-reads `byteLength` at copy time, and our own copies cannot
+    // be detached. The ceiling check above runs FIRST, so an oversized body is refused before any
+    // copy is made.
+    this.chunks.push(bytes.slice());
   }
 
   /** The accepted chunks flattened into one contiguous buffer. */

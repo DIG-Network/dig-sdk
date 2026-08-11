@@ -1420,3 +1420,49 @@ test("a getReader stream chunk that is not bytes is refused, not silently skippe
       /cannot be bounded/.test(e.message),
   );
 });
+
+test("a retained chunk is COPIED, not a view aliasing the producer's buffer (#2517)", async () => {
+  // The budget counts a chunk's VIEW length but was retaining the view, which pins the producer's
+  // whole `ArrayBuffer`. Measured before the fix: 48 counted bytes held 1,536 MiB resident and the
+  // read SUCCEEDED, because the 16 MiB ceiling was never approached. Amplification is
+  // `backing / counted`, and the budget permits ~16.7M one-byte chunks.
+  //
+  // Asserting on RSS would be flaky and GC-dependent. Aliasing is instead detected DIRECTLY and
+  // deterministically: the producer overwrites the bytes behind an already-yielded chunk before
+  // yielding the next one. An implementation that retained the view sees the mutated bytes and
+  // fails to parse; one that copied is unaffected.
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { items: [], total: 0 },
+  });
+  const backing = new Uint8Array(1024);
+  const split = 7;
+  const head = Buffer.from(payload.slice(0, split));
+  const tail = Buffer.from(payload.slice(split));
+  backing.set(head, 0);
+
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield backing.subarray(0, head.length);
+        // Scribble over the region the first chunk viewed. Only an aliasing implementation notices.
+        backing.fill(0x58, 0, head.length);
+        yield tail;
+      },
+    },
+    json: async () => {
+      throw new Error("res.json() must not be reached: the body is measurable");
+    },
+  });
+
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.listCollectionItems({
+    storeId: STORE,
+    collection: "c",
+  });
+  assert.deepEqual(res.items, []);
+});
