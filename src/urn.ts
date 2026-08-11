@@ -6,9 +6,17 @@
 // differently derive DIFFERENT keys and read different bytes. This file therefore states what is
 // TRUE of the sibling parsers rather than claiming they agree:
 //
-//   • dig-chrome-extension (`src/lib/dig-urn.ts`) extracts `salt=` from ANY position in the query
-//     and discards the rest of the query. This module MATCHES that behaviour.
-//   • hub.dig.net (`apps/web/lib/dig-client.ts`) still captures `salt=` only in FINAL position, so
+//   • dig-chrome-extension (`src/lib/dig-urn.ts:153-159`) extracts `salt=` at a `[?&]` boundary in
+//     ANY position. This module AGREES on that — the #2518 fix — and on the value semantics, and
+//     still differs in two measured ways: the extension matches the parameter NAME case-insensitively
+//     (`?SALT=ff00ff00` is a salt there, not here), and after removing the salt it strips any
+//     remaining query UNCONDITIONALLY (`\?.*$`), so it truncates `data?desalt=9.json` to `data` and
+//     `report?year=2024.csv` to `report`. Those are real, working keys with no salt and no secret, so
+//     on that class the extension is the one that is wrong: it destroys a key for content already
+//     published on chain. The fixture encodes THIS module's behaviour as the contract, the extension
+//     case is expected to fail against it, and fixing it is that repo's leg (#2725). Converging by
+//     copying a data-losing behaviour is not the byte-identity §4.1 protects.
+//   • hub.dig.net (`apps/web/lib/dig-client.ts:490`) still captures `salt=` only in FINAL position, so
 //     it derives a wrong key (with `salt: null`) for every non-final-position salt. It adopts this
 //     behaviour after this release; until then the two diverge on exactly those URNs — none of
 //     which can decrypt under either parser, so no working read is affected.
@@ -52,10 +60,27 @@ export interface ParsedUrn {
 const URN_PATH_RE =
   /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+)$/;
 
-// `salt=<hex>` as a query PARAMETER, in any position. Anchored to a parameter boundary (`?`/`&`, via
-// the caller slicing the query off first) so it cannot match a `salt=` embedded in some other
-// parameter's value; unanchored at the end so a trailing `#fragment` or `&next=…` terminates it.
-const SALT_QUERY_PARAM_RE = /(?:^|&)salt=([0-9a-fA-F]+)/;
+// THE ONE BOUNDARY RULE. A `salt=` counts only at the start of the query or immediately after an
+// `&` — never inside another parameter's value. Both decisions this module makes about a query tail
+// are derived from this single source: whether the tail IS a query at all, and what salt it carries.
+//
+// They were once two predicates on one concept — an UNANCHORED `query.includes("salt=")` for the
+// split, this anchored one for the value — and the broader one destroyed working keys. A key such as
+// `…/data?desalt=9.json` contains the substring `salt=` at no parameter boundary: it carries no salt,
+// no secret, and nothing to protect, yet it lost its entire query and derived a different retrieval
+// key than 0.6.3 — an unmigratable regression, since the content is already on chain. Sharing the
+// source makes "the split decision is exactly as strict as the salt decision" structural rather than
+// a comment that the two can drift away from.
+const SALT_PARAM_AT_BOUNDARY = "(?:^|&)salt=";
+
+// Does this tail carry a salt PARAMETER, making it a query rather than part of the resource key?
+const SALT_QUERY_MARKER_RE = new RegExp(SALT_PARAM_AT_BOUNDARY);
+
+// The salt VALUE, once the marker has matched. The hex class terminates the value at the first
+// non-hex character, so a trailing `&next=…` or `#fragment` ends it.
+const SALT_QUERY_VALUE_RE = new RegExp(
+  `${SALT_PARAM_AT_BOUNDARY}([0-9a-fA-F]+)`,
+);
 
 /**
  * Split a URN into its query-free base and the `salt` its query carried, if any.
@@ -77,14 +102,14 @@ function splitQuery(s: string): { base: string; salt: string | null } {
   // retrieval key includes the `?year=2024.csv`. Splitting unconditionally would derive a different
   // key and make already-published content unreadable — a regression in the one direction that
   // cannot be migrated, since the content is already on chain. So a query is only recognized as a
-  // query when it could carry the secret this change exists to handle.
+  // query when it carries a salt PARAMETER at a boundary (SALT_PARAM_AT_BOUNDARY above).
   //
-  // Presence of the literal `salt=` (not a valid salt VALUE) is deliberately what governs the split:
-  // it closes the leak for every value alphabet, including a malformed non-hex one, which would
+  // Presence of the parameter, not a valid salt VALUE, is deliberately what governs the split: it
+  // closes the leak for every value alphabet, including a malformed non-hex one, which would
   // otherwise stay inside `resourceKey` and ride onto every returned read result. Whether the value
-  // is a usable salt is a separate question, answered by SALT_QUERY_PARAM_RE below.
-  if (!query.includes("salt=")) return { base: s, salt: null };
-  const m = SALT_QUERY_PARAM_RE.exec(query);
+  // is a usable salt is the separate question SALT_QUERY_VALUE_RE answers.
+  if (!SALT_QUERY_MARKER_RE.test(query)) return { base: s, salt: null };
+  const m = SALT_QUERY_VALUE_RE.exec(query);
   return { base: s.slice(0, at), salt: m ? m[1]!.toLowerCase() : null };
 }
 

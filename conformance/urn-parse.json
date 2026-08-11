@@ -10,10 +10,12 @@
     "Shipped inside the npm package, so a consumer reads it from",
     "@dignetwork/dig-sdk/conformance/urn-parse.json rather than copying it.",
     "",
-    "Salt-parameter rules this table encodes, all normative (SPEC.md 7.1): the query is split off ONLY",
-    "when the query segment contains the literal 'salt=' (a '?' is legal in a resource key); values are",
-    "NOT percent-decoded; the parameter name is case-sensitive; the first occurrence wins; an empty or",
-    "valueless salt is null; and the value must be hex at a parameter boundary to count."
+    "Salt-parameter rules this table encodes, all normative (SPEC.md 7.1). ONE boundary rule governs",
+    "both decisions: a 'salt=' counts only at the start of the query or right after an '&', and the",
+    "query is split off ONLY when such a boundary 'salt=' is present (a '?' is legal in a resource key,",
+    "so a broader split truncates working keys). Values are NOT percent-decoded; the parameter name is",
+    "case-sensitive; the first boundary occurrence with a hex value wins; an empty or valueless salt is",
+    "null; and the value is the leading hex run."
   ],
   "version": 1,
   "cases": [
@@ -199,13 +201,43 @@
       }
     },
     {
-      "name": "'salt=' inside ANOTHER parameter's value is not a salt parameter — it must sit at a parameter boundary — but its presence does mean the query is not part of the key",
+      "name": "'salt=' inside ANOTHER parameter's value is not a salt parameter AND not a query marker: it must sit at a parameter boundary, so the key is preserved VERBATIM (a broader split predicate truncates a key carrying no secret at all)",
       "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?note=salt=ff00ff00",
       "expect": {
         "storeId": "abababababababababababababababababababababababababababababababab",
         "root": null,
-        "resourceKey": "secret.txt",
+        "resourceKey": "secret.txt?note=salt=ff00ff00",
         "salt": null
+      }
+    },
+    {
+      "name": "the PROPERTY behind the row above, on a key that merely contains the substring 'salt=' with no parameter anywhere: a query carrying no boundary salt leaves the resource key verbatim",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/data?desalt=9.json",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "data?desalt=9.json",
+        "salt": null
+      }
+    },
+    {
+      "name": "the first boundary occurrence carrying a HEX value wins: an earlier empty one is skipped, so this is 'bbbb' (a parser that stops at the first occurrence unconditionally derives a different key)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=&salt=bbbb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "bbbb"
+      }
+    },
+    {
+      "name": "the value is the LEADING HEX RUN, ending at the first non-hex character — a parser requiring the whole value to be hex would read null here and derive a different key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=ff00zz",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff00"
       }
     }
   ]

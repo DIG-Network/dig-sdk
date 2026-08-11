@@ -253,11 +253,20 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
 - `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
 
 **Query handling (normative).** A `<resource_key>` MAY contain any character, `?` and `#` included, so
-a trailing segment is NOT assumed to be a query. A parser MUST split a query off ONLY when the segment
-after the first `?` contains the literal `salt=`; otherwise the whole remainder is part of
-`<resource_key>` and MUST be preserved verbatim. `report?year=2024.csv` and `notes#1.md` are valid,
-working keys, and a parser that strips either derives a different retrieval key and cannot read
-already-published content.
+a trailing segment is NOT assumed to be a query.
+
+**One boundary rule governs both decisions.** A `salt=` counts only where it sits at a **parameter
+boundary** — at the start of the segment after the first `?`, or immediately after an `&`. A parser
+MUST split a query off ONLY when such a boundary `salt=` is present; otherwise the whole remainder is
+part of `<resource_key>` and MUST be preserved verbatim. A `salt=` occurring inside another
+parameter's value is therefore neither a salt **nor** a query marker: `data?desalt=9.json`,
+`report?tag=salt=1.csv` and `secret.txt?note=salt=ff00ff00` keep their queries as part of the key.
+
+A parser MUST NOT recognize the query with a broader test than it recognizes the salt. Splitting on an
+unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a
+different retrieval key for content that is already published on chain — unreadable, and unmigratable.
+`report?year=2024.csv` and `notes#1.md` are likewise valid, working keys, and a parser that strips
+either derives a different retrieval key and cannot read already-published content.
 
 When a query IS recognized, `salt` is read as an ordinary query PARAMETER and the remainder of the
 query is discarded (no other parameter addresses a resource). The salt value MUST be resolved by these
@@ -271,13 +280,21 @@ query parser (e.g. `URLSearchParams`) does NOT satisfy them and will derive a di
 - **No percent-decoding.** The value is taken verbatim; `?salt=%61%61` is NOT the salt `aa`, it is no
   salt at all.
 - **The parameter name is case-sensitive.** `?SALT=<hex>` is not a salt parameter.
-- **Parameter boundary required.** `salt=` counts only at the start of the query or immediately after
-  an `&`; inside another parameter's value it is not a salt.
-- **First occurrence wins** on a duplicated parameter.
-- **Empty or valueless is null.** `?salt=` and `?salt` yield `null`, never `""`.
-- **Non-hex is null.** The value must be hex to be a salt.
+- **Parameter boundary required** (the rule above): `salt=` counts only at the start of the query or
+  immediately after an `&`; inside another parameter's value it is not a salt.
+- **The first boundary occurrence carrying a hex value wins.** On `?salt=aaaa&salt=bbbb` the salt is
+  `aaaa`. An earlier occurrence whose value is empty or does not begin with a hex digit is skipped,
+  so `?salt=&salt=bbbb` yields `bbbb` — a parser that stops at the first occurrence unconditionally
+  derives a different key here.
+- **Empty or valueless is null.** `?salt=` and `?salt` yield `null`, never `""`. `?salt` carries no
+  `=`, so it is not a boundary `salt=` at all and the tail stays part of `<resource_key>`.
+- **The value is the leading hex run.** `?salt=ff00ff00#frag` and `?salt=ff00ff00&x=1` both yield
+  `ff00ff00`: the value ends at the first character outside `[0-9a-fA-F]`. A value with no leading hex
+  digit is not a salt (`?salt=not-hex` → `null`), and one that is only partly hex resolves to its hex
+  prefix (`?salt=ff00zz` → `ff00`). A parser that requires the WHOLE value to be hex derives a
+  different key on that last input.
 
-A value that fails these rules yields `salt: null`. The query is still split off whenever the literal
+A value that fails these rules yields `salt: null`. The query is still split off whenever a boundary
 `salt=` is present — including for a malformed value — so a secret in an unexpected alphabet cannot
 ride along inside `<resource_key>`.
 

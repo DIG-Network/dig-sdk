@@ -49,6 +49,13 @@ const REQUIRED_COVERAGE = {
     (c.urn.match(/salt=/g) ?? []).length > 1,
   "an uppercase parameter name": (c) => c.urn.includes("SALT="),
   "'salt=' inside another parameter's value": (c) => /=salt=/.test(c.urn),
+  "a 'salt=' substring at NO parameter boundary, with the key preserved verbatim":
+    (c) =>
+      c.urn.includes("salt=") &&
+      !/[?&]salt=/.test(c.urn) &&
+      c.expect.resourceKey?.includes("salt="),
+  "a partly-hex salt value (the leading-hex-run rule)": (c) =>
+    /salt=[0-9a-f]+[g-z]/.test(c.urn) && c.expect.salt,
 };
 
 for (const [what, matches] of Object.entries(REQUIRED_COVERAGE)) {
@@ -90,6 +97,44 @@ test("a non-final-position salt never reaches the resource key (#2518)", () => {
         `the salt leaked into ${field}`,
       );
     }
+  }
+});
+
+test("a query carrying no salt PARAMETER leaves the resource key verbatim (#2518 property)", () => {
+  // THE PROPERTY, not one input. The named regression below pins `report?year=2024.csv`, a key with no
+  // `salt=` text at all — and the nearest wrong implementation passes it: a split predicate that tests
+  // an UNANCHORED `salt=` substring, while the salt itself is read only at a parameter boundary. Every
+  // key here contains the substring `salt=` somewhere that is NOT a boundary, so it carries no salt,
+  // no secret and nothing to protect; under the broader predicate each loses its whole query and
+  // derives a retrieval key different from 0.6.3's, for content already published on chain.
+  //
+  // The split decision must be exactly as strict as the salt decision, never broader.
+  const noBoundarySalt = [
+    "data?desalt=9.json",
+    "report?tag=salt=1.csv",
+    "archive?q=a&b=salt=2.zip",
+    "index.html?ref=mysalt=1",
+    "secret.txt?note=salt=ff00ff00",
+  ];
+  for (const key of noBoundarySalt) {
+    const parsed = parseUrn(`urn:dig:chia:${"ab".repeat(32)}/${key}`);
+    assert.equal(parsed.resourceKey, key, `${key} lost part of its key`);
+    assert.equal(parsed.salt, null, `${key} has no salt parameter`);
+  }
+
+  // The other half of the boundary rule, asserted together so neither can be satisfied by loosening
+  // the other: a salt that IS at a boundary must still split, and must still leave nothing behind —
+  // including when its value is malformed, which is the case that could smuggle a secret in an
+  // unexpected alphabet into `resourceKey` and onto every returned read result.
+  const boundarySalt = [
+    ["secret.txt?salt=ff00ff00", "ff00ff00"],
+    ["secret.txt?x=1&salt=ff00ff00", "ff00ff00"],
+    ["secret.txt?salt=not-hex-secret", null],
+  ];
+  for (const [key, salt] of boundarySalt) {
+    const parsed = parseUrn(`urn:dig:chia:${"ab".repeat(32)}/${key}`);
+    assert.equal(parsed.resourceKey, "secret.txt", `${key} kept its query`);
+    assert.equal(parsed.salt, salt);
   }
 });
 
