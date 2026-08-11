@@ -64,6 +64,19 @@ const REQUIRED_COVERAGE = {
   // and SPEC.md derived different keys for this class with every row still green. The predicate
   // demands the salt come from the LATER, `?`-borne occurrence — a row whose FIRST occurrence already
   // supplies the value (`a?salt=aa?salt=bb`) does not exercise it.
+  // TWO DISTINCT usable salts in one URN. Every other duplicate-salt predicate above is satisfiable
+  // by a row whose two occurrences carry the SAME value (or where only one is hex), and such a row
+  // cannot distinguish a first-wins scanner from a last-wins one — the generated sweep was blind to
+  // exactly this class for exactly this reason. A row here must offer two DIFFERENT hex candidates
+  // and expect the earlier one.
+  "two DISTINCT hex salt candidates, with the EARLIER one winning": (c) => {
+    const values = [...c.urn.matchAll(/[?&]salt=([0-9a-fA-F]+)/g)].map((m) =>
+      m[1].toLowerCase(),
+    );
+    return (
+      new Set(values).size > 1 && c.expect.salt === values[0]
+    );
+  },
   "a chosen query tail carrying a further '?'-borne salt=": (c) => {
     const m = /\?salt=([0-9a-fA-F]*)[^&#]*\?salt=([0-9a-fA-F]+)/.exec(c.urn);
     return Boolean(m) && c.expect.salt === m[2].toLowerCase();

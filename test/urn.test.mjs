@@ -223,17 +223,32 @@ test("a '?'-borne salt does NOT decide which '?' starts the query (#2719)", () =
   assert.equal(parsed.salt, "ff");
 });
 
-// Widening the VALUE scanner is a behaviour CHANGE, so it is measured rather than asserted: the
-// sweep reports how many of the generated inputs it moves, and pins the two properties that make
-// the change safe — the resource key is never affected (only the salt is), and no input that had a
-// usable salt before loses it.
-test("widening the salt scanner changes only salts, and takes none away (#2719)", async () => {
-  const { referenceParse, narrowParse, generatedTails } =
+// Widening the VALUE scanner is a behaviour CHANGE, so it is MEASURED rather than asserted.
+//
+// The claim this sweep once made — "no input that had a salt before loses it" — was FALSE, and green
+// only because the generator could not express the class that breaks it. `k??salt=aa11&salt=ff00`
+// carries two DIFFERENT usable salts, and the widening MOVES the read from `ff00` (the only `&`
+// boundary) to `aa11` (the earlier `?` boundary). That is a different decryption key, so the honest
+// claim is not "nothing moves" but "nothing that WORKS TODAY moves".
+//
+// Three properties are pinned, and the third is the one that carries the safety argument:
+//
+//   1. the resource key is never affected — only the salt is;
+//   2. no input is left with NO salt where it previously had one (a widening must not blind the
+//      scanner, which is the failure mode #2518 was);
+//   3. every input whose salt MOVES reads `salt: null` under PUBLISHED 0.6.3, so no read that a real
+//      user can perform today changes its key. This is checked against 0.6.3's own final-position
+//      regex, not against either side of the change, so it cannot be satisfied circularly.
+test("widening the salt scanner changes only salts, and moves none that 0.6.3 could read (#2719)", async () => {
+  const { referenceParse, narrowParse, publishedSalt, generatedTails } =
     await import("./urn-splitquery-equivalence.mjs");
   let compared = 0;
   let changed = 0;
+  let moved = 0;
   const keyChanges = [];
-  const saltsLost = [];
+  const saltsBlinded = [];
+  const movedReadableIn063 = [];
+  const movedExamples = [];
   for (const tail of generatedTails()) {
     const urn = `urn:dig:chia:${STORE}/${tail}`;
     compared++;
@@ -246,18 +261,39 @@ test("widening the salt scanner changes only salts, and takes none away (#2719)"
     if (keyBefore !== keyAfter && keyChanges.length < 5) {
       keyChanges.push(`${tail}: ${keyBefore} -> ${keyAfter}`);
     }
-    if (saltBefore !== "null" && saltsLost.length < 5) {
-      saltsLost.push(`${tail}: ${saltBefore} -> ${saltAfter}`);
+    if (saltBefore === "null") continue;
+    if (saltAfter === "null" && saltsBlinded.length < 5) {
+      saltsBlinded.push(`${tail}: ${saltBefore} -> null`);
+      continue;
+    }
+    moved++;
+    if (movedExamples.length < 5) {
+      movedExamples.push(`${tail}: ${saltBefore} -> ${saltAfter}`);
+    }
+    if (publishedSalt(urn) !== null && movedReadableIn063.length < 5) {
+      movedReadableIn063.push(`${tail}: ${saltBefore} -> ${saltAfter}`);
     }
   }
   assert.deepEqual(keyChanges, [], "the widening moved a resource key");
+  assert.deepEqual(saltsBlinded, [], "the widening removed a salt entirely");
   assert.deepEqual(
-    saltsLost,
+    movedReadableIn063,
     [],
-    "the widening removed a previously-read salt",
+    "the widening moved a salt that published 0.6.3 could read",
   );
   assert.ok(
     changed > 0,
     `the widening changed nothing across ${compared} inputs`,
+  );
+  // The sweep must be able to SEE the moved-salt class; if it cannot, properties 2 and 3 above are
+  // vacuous and this test is measuring an empty set. This is the assertion the previous generator
+  // (one hex token, depth 5) would have failed.
+  assert.ok(
+    moved > 0,
+    `no generated input moves a salt — the generator is blind to the class (${compared} compared)`,
+  );
+  assert.ok(
+    movedExamples.some((e) => e.includes("?salt=")),
+    `no moved-salt example crosses a '?' boundary: ${movedExamples.join(", ")}`,
   );
 });

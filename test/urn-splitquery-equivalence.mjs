@@ -62,6 +62,11 @@ const TOKENS = [
   "&",
   "#",
   "salt=",
+  // TWO DISTINCT hex values, deliberately. With only one, no generated input can ever hold two
+  // DIFFERENT usable salts, so the sweep is structurally unable to tell a first-wins scanner from a
+  // last-wins one — the property the widening actually changes. That blind spot alone hid
+  // `k??salt=aa11&salt=ff00` (0 hits across 579,189 two-hex-token inputs at depth 5).
+  "salt=aa11",
   "salt=ff00",
   "salt=zz",
   "ff00",
@@ -78,7 +83,23 @@ export function narrowParse(urn) {
   return referenceParse(urn, narrowValueRe);
 }
 
-export function* generatedTails(maxLen = 5) {
+// `maxLen` is 6, not 5, for one measured reason: the shortest tail that can carry two hex salts
+// across a `?` boundary — `k` `?` `?` `salt=aa11` `&` `salt=ff00` — is SIX tokens long. At 5 the
+// space is 3,257,430 inputs and contains zero of them.
+// The salt as PUBLISHED 0.6.3 read it: a salt only in FINAL position, matched off the whole URN.
+// It is the baseline that decides whether a behaviour change can break a read that works TODAY —
+// an input 0.6.3 reads as `null` could never decrypt for a real user, so moving its salt breaks
+// nothing. Copied verbatim from `git show f78fcb0:src/urn.ts`.
+const PUBLISHED_063_RE =
+  /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+?)(?:\?salt=([0-9a-fA-F]+))?$/;
+
+/** The salt published 0.6.3 reads for `urn`, or null. */
+export function publishedSalt(urn) {
+  const m = PUBLISHED_063_RE.exec(String(urn).trim());
+  return m?.[4] ? m[4].toLowerCase() : null;
+}
+
+export function* generatedTails(maxLen = 6) {
   const build = function* (prefix, depth) {
     if (prefix !== "") yield prefix;
     if (depth === 0) return;

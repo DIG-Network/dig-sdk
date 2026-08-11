@@ -276,6 +276,16 @@
       "expect": {
         "invalid": true
       }
+    },
+    {
+      "name": "two DISTINCT usable salts: the FIRST boundary occurrence wins even when a '?' introduced it and an '&' introduced the later one (published 0.6.3 read the LATER value's shape as no salt at all, so no working read changes)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/k??salt=aa11&salt=ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "k",
+        "salt": "aa11"
+      }
     }
   ]
 }
