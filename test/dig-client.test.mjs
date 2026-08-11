@@ -1254,3 +1254,92 @@ test("a chunk that FORGES Uint8Array's prototype cannot disable the ceiling (#25
     );
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// A nested ARRAY in any coerced response field is an UNCATCHABLE crash, not a coded refusal (#2719).
+//
+// Coercing a deeply nested array — `Number(v)`, `v >>> 0`, `String(v)`, template interpolation —
+// invokes `Array.prototype.join`, which recurses once per nesting level and throws a raw
+// `RangeError`. For the `offset` guard the coercion happens while EVALUATING THE ARGUMENTS to
+// `throw new DigSdkError(...)`, so neither the constructor's own depth bound nor any `catch` in the
+// read path can see it.
+//
+// The fixtures go over the REAL wire: the body is a JSON string parsed by the transport, not an
+// object handed back by an injected `json()`. An injected object skips the parse and cannot
+// reproduce a hostile shape a real node can actually send. ~117 KiB produces 60000 levels.
+// ---------------------------------------------------------------------------------------------
+
+/** A 60000-deep JSON array literal — built as TEXT, so no helper recurses building it. */
+function deepArrayJson(depth = 60_000) {
+  return "[".repeat(depth) + "0" + "]".repeat(depth);
+}
+
+/** A `fetch` answering every RPC with `bodyJson`, delivered as a real streamed `Response`. */
+function jsonWireRpc(bodyJson) {
+  return async () =>
+    new Response(bodyJson, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+}
+
+/** `dig.getContent` result fields, JSON-encoded, with `overrides` spliced in verbatim as text. */
+function contentResultWire(overrides) {
+  const base = {
+    total_length: 0,
+    offset: 0,
+    ciphertext: "",
+    inclusion_proof: "",
+    complete: true,
+  };
+  const fields = Object.entries(base)
+    .filter(([k]) => !(k in overrides))
+    .map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`);
+  for (const [k, raw] of Object.entries(overrides)) {
+    fields.push(`${JSON.stringify(k)}:${raw}`);
+  }
+  return `{"jsonrpc":"2.0","id":1,"result":{${fields.join(",")}}}`;
+}
+
+const NESTED_ARRAY_CASES = [
+  ["total_length", () => contentResultWire({ total_length: deepArrayJson() })],
+  [
+    "chunk_lens element",
+    () => contentResultWire({ chunk_lens: `[${deepArrayJson()}]` }),
+  ],
+  ["offset", () => contentResultWire({ offset: deepArrayJson() })],
+  [
+    "next_offset",
+    () =>
+      contentResultWire({
+        total_length: "4",
+        ciphertext: '"AAAA"',
+        complete: "false",
+        next_offset: deepArrayJson(),
+      }),
+  ],
+];
+
+for (const [field, makeBody] of NESTED_ARRAY_CASES) {
+  test(`a nested ARRAY in ${field} is refused with a coded error, not a RangeError (#2719)`, async () => {
+    const root = "cd".repeat(32);
+    const dig = new DigClient({ fetch: jsonWireRpc(makeBody()) });
+    await assert.rejects(
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+      `${field} escaped as an uncoded error`,
+    );
+  });
+}
+
+test("a nested ARRAY in a JSON-RPC error message is refused with a coded error (#2719)", async () => {
+  const dig = new DigClient({
+    fetch: jsonWireRpc(
+      `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":${deepArrayJson()}}}`,
+    ),
+  });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError && typeof e.code === "string",
+  );
+});

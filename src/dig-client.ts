@@ -106,6 +106,42 @@ const MAX_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
 // treated as hostile: generous to slow-but-honest nodes, still a hard bound.
 const MAX_CONTENT_PAGES = 4096;
 
+/**
+ * Refuse a response field that cannot be COERCED safely, before anything coerces it.
+ *
+ * `JSON.parse` can hand back an arbitrarily nested array or object, and every coercion this module
+ * performs on a response field — `Number(v)`, `v >>> 0`, `String(v)`, template interpolation —
+ * reaches `Array.prototype.join` / `Object.prototype.toString`, which recurse once per nesting level
+ * and throw a raw `RangeError` (measured: a 117 KiB body nested 60000 deep). That is not a survivable
+ * failure. For the `offset` guard the coercion happens while evaluating the ARGUMENTS to
+ * `throw new DigSdkError(...)`, so it escapes both the error constructor's own depth bound and every
+ * `catch` on the read path, and aborts the consumer's process (#2719).
+ *
+ * One shared helper on purpose: a sixth coercion site added later cannot silently reopen the hole,
+ * because the refusal is the thing every site calls rather than a pattern each site re-implements.
+ *
+ * It refuses exactly the shapes that can RECURSE — objects, arrays, functions — and deliberately not
+ * "everything that is not a number". A numeric string coerces in constant time and is accepted today,
+ * so narrowing to `typeof === "number"` would be an unrequested behaviour change; the numeric
+ * validation that follows each call site remains the judge of whether the value is usable.
+ *
+ * Only the value's TYPE goes into the error context, never the value: putting the hostile value there
+ * hands it straight back to the redaction walk this exists to keep it away from.
+ */
+function assertCoercible(v: unknown, field: string, method: string): void {
+  if (v !== null && (typeof v === "object" || typeof v === "function")) {
+    throw new DigSdkError(
+      "RPC_MALFORMED_RESPONSE",
+      `The content network returned a non-scalar ${field}, which cannot be read as a value.`,
+      {
+        rpcMethod: method,
+        field,
+        valueType: Array.isArray(v) ? "array" : typeof v,
+      },
+    );
+  }
+}
+
 /** Options to construct a DigClient. */
 export interface DigClientOptions {
   /**
@@ -544,6 +580,7 @@ export class DigClient {
       if (total === null) {
         // Bound the UNTRUSTED declared length against the protocol ceiling BEFORE allocating. Check
         // the raw number (not `>>> 0`, which would wrap a >2^32 value down under the ceiling).
+        assertCoercible(r.total_length, "total_length", "dig.getContent");
         const declared = Number(r.total_length);
         if (!Number.isFinite(declared) || declared < 0) {
           throw new DigSdkError(
@@ -578,7 +615,10 @@ export class DigClient {
         }
       }
       if (chunkLens === null && Array.isArray(r.chunk_lens)) {
-        chunkLens = r.chunk_lens.map((n) => n >>> 0);
+        chunkLens = r.chunk_lens.map((n) => {
+          assertCoercible(n, "chunk_lens entry", "dig.getContent");
+          return n >>> 0;
+        });
       }
       const b64 = r.ciphertext ?? "";
       // The ceiling below measures `b64.length`, so it is only a bound if `b64` IS a string.
@@ -631,6 +671,7 @@ export class DigClient {
       // as an uncoded error, breaking the SDK's contract that every failure it surfaces is a
       // `DigSdkError`. `>>> 0` cannot substitute for this: it silently wraps a huge or negative
       // offset into a plausible one rather than refusing it.
+      assertCoercible(r.offset, "offset", "dig.getContent");
       const at = r.offset;
       if (!Number.isInteger(at) || at < 0 || at > total) {
         throw new DigSdkError(
@@ -653,6 +694,7 @@ export class DigClient {
       // `complete: false` would otherwise spin the client forever on a well-formed-looking reply
       // (#2517) — the cheapest possible hang, and the §5.3 ladder makes an unauthenticated local
       // node the default endpoint for a Node consumer.
+      assertCoercible(r.next_offset, "next_offset", "dig.getContent");
       const next = r.next_offset >>> 0;
       if (next <= offset) {
         throw new DigSdkError(
@@ -716,12 +758,14 @@ export class DigClient {
         { cause },
       );
     }
-    if (json && json.error)
+    if (json && json.error) {
+      assertCoercible(json.error.message, "error.message", method);
       throw new DigSdkError(
         "RPC_ERROR",
         `dig RPC ${method}: ${json.error.message ?? "error"}`,
         { rpcMethod: method, rpcCode: json.error.code },
       );
+    }
     return json ? (json.result ?? null) : null;
   }
 }
