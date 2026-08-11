@@ -138,3 +138,48 @@ test("a cyclic error context does not throw during construction (#2518)", () => 
   assert.equal(err.context.b, err.context.a[0]);
   assert.equal(err.context.b.self, err.context.b);
 });
+
+// ---------------------------------------------------------------------------------------------
+// `splitQuery` must be LINEAR in the URN's length (#2719).
+//
+// Iterating every `?` while taking `s.slice(at + 1)` — an O(n) copy — and running a full regex scan
+// over that tail makes the parser quadratic. `isUrn`/`parseUrn` are public exports and `isUrn` is
+// exactly the cheap validator a dapp runs on untrusted input, so this is a remote stall:
+//
+//     16 000 `?`  (16 KiB)   0.0 ms on 0.6.3  ->  21.1 ms
+//    128 000 `?` (125 KiB)   0.3 ms on 0.6.3  -> 865.8 ms
+//
+// The threshold below is deliberately generous — 100 ms against a measured 0.3 ms linear cost and a
+// measured ~866 ms quadratic one. It is a shape assertion (linear vs quadratic), not a benchmark,
+// so it cannot flake on a slow machine while still failing decisively if the quadratic returns.
+// ---------------------------------------------------------------------------------------------
+
+test("a URN with 128k question marks parses in linear time (#2719)", () => {
+  const urn = `urn:dig:chia:${STORE}/${"?".repeat(128_000)}a`;
+  const started = Date.now();
+  isUrn(urn);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 100, `isUrn took ${elapsed}ms on a ${urn.length}-byte URN`);
+});
+
+// The rewrite above is a PERFORMANCE change and must decide every input exactly as the rule reads.
+// A hand-picked case list cannot show that, so both implementations are swept over a generated
+// space of separator/value/position combinations and compared field for field.
+test("the linear split agrees with the reference rule on every generated input (#2719)", async () => {
+  const { referenceParse, actualParse, generatedTails } = await import(
+    "./urn-splitquery-equivalence.mjs"
+  );
+  let compared = 0;
+  const differences = [];
+  for (const tail of generatedTails()) {
+    const urn = `urn:dig:chia:${STORE}/${tail}`;
+    compared++;
+    const expected = referenceParse(urn);
+    const actual = actualParse(parseUrn, urn);
+    if (expected !== actual && differences.length < 5) {
+      differences.push(`${JSON.stringify(tail)}: ${expected} != ${actual}`);
+    }
+  }
+  assert.ok(compared > 100_000, `only ${compared} inputs compared`);
+  assert.deepEqual(differences, [], `compared ${compared} inputs`);
+});

@@ -71,15 +71,20 @@ const URN_PATH_RE =
 // key than 0.6.3 — an unmigratable regression, since the content is already on chain. Sharing the
 // source makes "the split decision is exactly as strict as the salt decision" structural rather than
 // a comment that the two can drift away from.
-const SALT_PARAM_AT_BOUNDARY = "(?:^|&)salt=";
+const SALT_PARAM_NAME = "salt=";
 
-// Does this tail carry a salt PARAMETER, making it a query rather than part of the resource key?
-const SALT_QUERY_MARKER_RE = new RegExp(SALT_PARAM_AT_BOUNDARY);
+// The literal the SPLIT decision scans for: a salt parameter introduced by an `&`. The other way a
+// tail can qualify — `salt=` at the very start of the query — is tested with `startsWith` instead of
+// a regex, because the split loop must not materialise a tail per candidate `?` (see `splitQuery`).
+const SALT_AFTER_AMP = `&${SALT_PARAM_NAME}`;
 
-// The salt VALUE, once the marker has matched. The hex class terminates the value at the first
-// non-hex character, so a trailing `&next=…` or `#fragment` ends it.
+// The salt VALUE, read from a tail that has ALREADY been judged to be a query. The hex class
+// terminates the value at the first non-hex character, so a trailing `&next=…` or `#fragment` ends it.
+//
+// It answers a DIFFERENT question from the split (which `?` starts the query, vs where the salt sits
+// inside it), so the two are written out separately rather than sharing one literal.
 const SALT_QUERY_VALUE_RE = new RegExp(
-  `${SALT_PARAM_AT_BOUNDARY}([0-9a-fA-F]+)`,
+  `(?:^|&)${SALT_PARAM_NAME}([0-9a-fA-F]+)`,
 );
 
 /**
@@ -105,8 +110,22 @@ function splitQuery(s: string): { base: string; salt: string | null } {
   // The FIRST qualifying `?` wins, not the last, because it strips the most: on `a?salt=aa?salt=bb`
   // the whole tail goes, so no later `salt=` can survive inside the key. Splitting at the last would
   // leave `a?salt=aa` — a leak — which is the direction that must never be chosen.
+  //
+  // LINEAR, deliberately. The obvious form of this loop takes `s.slice(at + 1)` — an O(n) copy —
+  // and runs a full regex scan over that tail, once per `?`. That is quadratic, and `isUrn` is
+  // exactly the cheap validator a dapp runs on untrusted input: measured, a 125 KiB URN of question
+  // marks went from 0.3 ms to 866 ms, and a 195 KiB one blocked the event loop for 2.1 seconds.
+  //
+  // So the tail is never materialised. The two ways a tail can qualify are tested directly against
+  // `s`: `salt=` sitting at the very start of the query, or an `&salt=` somewhere after this `?`.
+  //
+  // `ampIdx` MOVES FORWARD rather than being computed once. A single precomputed index is wrong:
+  // a brute-force over the generated space found `k&salt=?&salt=`, where the only `&salt=` before
+  // the second `?` sits BEHIND it and must not qualify it. Re-searching only when the index falls
+  // behind keeps the scans disjoint, so the whole loop stays linear.
+  let ampIdx = s.indexOf(SALT_AFTER_AMP);
   for (let at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
-    const query = s.slice(at + 1);
+    if (ampIdx >= 0 && ampIdx < at) ampIdx = s.indexOf(SALT_AFTER_AMP, at);
     // THE NARROWING, and the reason this change stays additive. A tail is only a query when it
     // carries a salt PARAMETER at a boundary (SALT_PARAM_AT_BOUNDARY above). Splitting on anything
     // broader derives a different key for a key that carries no salt and no secret at all, and makes
@@ -116,8 +135,11 @@ function splitQuery(s: string): { base: string; salt: string | null } {
     // closes the leak for every value alphabet, including a malformed non-hex one, which would
     // otherwise stay inside `resourceKey`. Whether the value is a USABLE salt is the separate
     // question SALT_QUERY_VALUE_RE answers.
-    if (!SALT_QUERY_MARKER_RE.test(query)) continue;
-    const m = SALT_QUERY_VALUE_RE.exec(query);
+    const isQuery = s.startsWith(SALT_PARAM_NAME, at + 1) || ampIdx > at;
+    if (!isQuery) continue;
+    // The tail is materialised exactly ONCE, for the `?` that won — the cost the loop above refuses
+    // to pay per candidate is paid a single time on the way out.
+    const m = SALT_QUERY_VALUE_RE.exec(s.slice(at + 1));
     return { base: s.slice(0, at), salt: m ? m[1]!.toLowerCase() : null };
   }
   return { base: s, salt: null };
