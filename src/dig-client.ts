@@ -36,7 +36,7 @@ import type {
   ReadResult,
   UrnKeys,
 } from "./types.js";
-import { DigSdkError } from "./errors.js";
+import { DigSdkError, isDigSdkError } from "./errors.js";
 import {
   DEFAULT_PROBE_TIMEOUT_MS,
   GATEWAY_URL,
@@ -73,12 +73,10 @@ const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 // reassembly buffer but says nothing about one response, so an untrusted node could declare a
 // 100-byte resource and answer with hundreds of megabytes.
 //
-// Be precise about WHAT this bounds. `rpcCall` already did `await res.json()`, so the hostile body
-// has been read and parsed: the base64 string (~1.33x the ciphertext) is resident before this check
-// runs. What the check prevents is the ADDITIONAL decoded `Uint8Array` — roughly the smaller half of
-// the cost. Bounding the response body itself belongs in `rpcCall` (a streaming/size-limited read)
-// and is deliberately deferred to its own change, since it has its own blast radius across every
-// `dig.*` method.
+// Be precise about WHAT this bounds: only the DECODED `Uint8Array`. The base64 string it decodes
+// from is already resident, because `rpcCall` parsed the body first. The body itself is bounded one
+// layer down by MAX_RPC_RESPONSE_BYTES below, which `rpcCall` enforces while STREAMING — so the two
+// ceilings compose: the transport caps what is ever read, this caps what is then allocated.
 //
 // The client ASKS for `RPC_CHUNK_BYTES`, so a conforming node never exceeds it and the honest
 // bound is 3 MiB. Doubling it is deliberate slack in the SAFE direction: refusing content a
@@ -86,6 +84,19 @@ const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 // ceiling and small enough that repeated hostile responses cannot exhaust a tab. A node needing
 // more per response is misbehaving by its own protocol.
 const MAX_RESPONSE_CIPHERTEXT_BYTES = 2 * RPC_CHUNK_BYTES;
+
+// Ceiling on the RAW BODY BYTES any single `dig.*` response may carry, enforced WHILE STREAMING the
+// body — before the whole thing is resident and before it is parsed (#2517). This is the bound the
+// per-response ciphertext ceiling above could not provide: that check runs after `rpcCall` has
+// already parsed the body, so a node declaring `total_length: 100` and answering with 64 MiB cost
+// 319 MiB RSS before anything refused it.
+//
+// Derived from the protocol's own per-response limit rather than picked: the largest LEGAL response
+// carries MAX_RESPONSE_CIPHERTEXT_BYTES (6 MiB) of ciphertext, which is ~8 MiB once base64-encoded,
+// plus an inclusion proof and JSON scaffolding. 16 MiB is 2x that — ample slack for a conforming
+// node, ~30x below the RSS an unbounded read reached, and small enough that repeated hostile
+// responses cannot exhaust a tab.
+const MAX_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 // Ceiling on how many `dig.getContent` pages one resource may take (#2517). The strict
 // forward-progress check below already stops a node that repeats an offset forever; this bounds
@@ -694,8 +705,10 @@ export class DigClient {
       error?: { message?: string; code?: number };
     };
     try {
-      json = (await res.json()) as typeof json;
+      json = await readBoundedJson<typeof json>(res, method);
     } catch (cause) {
+      // The size refusal is already a coded verdict; only a PARSE failure needs wrapping.
+      if (isDigSdkError(cause)) throw cause;
       throw new DigSdkError(
         "RPC_MALFORMED_RESPONSE",
         `dig RPC ${method} returned a body that is not valid JSON.`,
@@ -716,6 +729,72 @@ export class DigClient {
 // AES-256-GCM-SIV-open a resource's served ciphertext under `keyHex`, splitting the PLAIN-
 // concatenated chunk ciphertexts by `chunkLens` (per-chunk CIPHERTEXT byte lengths) and opening
 // each. Empty/absent chunkLens ⇒ single-chunk resource. Throws if any chunk's tag fails.
+// Read a JSON-RPC response body with a HARD byte budget, then parse it.
+//
+// Reads the body as a STREAM and refuses the moment it exceeds {@link MAX_RPC_RESPONSE_BYTES}, so an
+// untrusted node (the §5.3 ladder makes an unauthenticated local node the default endpoint) cannot
+// make the client resident-allocate an unbounded body just by answering a request (#2517).
+//
+// It THROWS rather than truncating on purpose: a truncated body would either fail to parse — an
+// unexplained "malformed response" for what is really a size refusal — or, worse, parse into a
+// partial result the caller would treat as complete. Silent corruption is the failure mode a size
+// limit must not introduce.
+//
+// A response with no readable stream (a non-streaming `Response` shim) falls back to the platform
+// parse, which is why the budget lives here and not in a caller: every `dig.*` method shares it.
+async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
+  const body: ReadableStream<Uint8Array> | null | undefined = res.body;
+  if (!body || typeof body.getReader !== "function") {
+    return (await res.json()) as T;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let read = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      read += value.byteLength;
+      if (read > MAX_RPC_RESPONSE_BYTES) {
+        throw new DigSdkError(
+          "RESOURCE_TOO_LARGE",
+          `dig RPC ${method} returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
+          {
+            rpcMethod: method,
+            httpStatus: res.status,
+            maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
+          },
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    // Release the connection whether we finished or bailed out mid-body; a hostile node that never
+    // ends its stream must not leave a socket held open.
+    try {
+      await reader.cancel();
+    } catch {
+      /* the stream is already closed or errored — nothing to release */
+    }
+  }
+  return JSON.parse(new TextDecoder().decode(concatBytes(chunks, read))) as T;
+}
+
+/** Flatten `chunks` (totalling `length` bytes) into one contiguous buffer. */
+function concatBytes(
+  chunks: readonly Uint8Array[],
+  length: number,
+): Uint8Array {
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
 function decryptResourceChunks(
   wasm: DigClientWasm,
   keyHex: string,

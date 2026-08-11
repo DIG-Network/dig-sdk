@@ -946,3 +946,129 @@ test("ACCEPTS a chunk offset exactly equal to total_length (#2517)", async () =>
   // REFUSES, so only the accepting side can distinguish `at > total` from `at >= total`.
   assert.equal(res.bytes.length, 100);
 });
+
+// ---------------------------------------------------------------------------------------------
+// A hostile response shape must not escape the SDK uncoded (#2719).
+//
+// The `total_length` guard fires CORRECTLY on a non-numeric declared length and puts the offending
+// value into the error context — which, for an attacker-shaped value, is where redaction used to
+// blow the stack. This drives the end-to-end path a ~293 KiB nested JSON response produces, so it
+// fails against the unbounded redaction even though the guard itself was already right.
+// ---------------------------------------------------------------------------------------------
+
+function mockNestedTotalLengthRpc(depth) {
+  let nested = { leaf: true };
+  for (let i = 0; i < depth; i++) nested = { a: nested };
+  return async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: nested,
+            offset: 0,
+            ciphertext: "",
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+}
+
+test("refuses a deeply nested total_length with a coded error, not a RangeError (#2719)", async () => {
+  const root = "cd".repeat(32);
+  const dig = new DigClient({ fetch: mockNestedTotalLengthRpc(50_000) });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The response BODY is bounded inside the shared transport (#2517).
+//
+// The per-response ciphertext ceiling runs AFTER `rpcCall` has already parsed the body, so a node
+// declaring `total_length: 100` and answering with tens of MiB was fully resident before anything
+// refused it (measured: 319 MiB RSS for a 64 MiB body). The bound therefore has to live in the
+// transport, and it has to STOP READING — not read everything and complain afterwards.
+// ---------------------------------------------------------------------------------------------
+
+// A REAL `Response` over a stream that reports how much of itself was pulled. `produced` is the
+// discriminating measurement: an implementation that buffers the whole body and then checks its
+// size passes an error-code assertion identically, and only this counter can tell them apart.
+function mockOversizedBodyRpc(totalBytes, { chunkBytes = 1 << 20 } = {}) {
+  const meter = { produced: 0 };
+  const fetchImpl = async () => {
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (meter.produced >= totalBytes) {
+          controller.close();
+          return;
+        }
+        const n = Math.min(chunkBytes, totalBytes - meter.produced);
+        meter.produced += n;
+        controller.enqueue(new Uint8Array(n).fill(0x20));
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  return { fetchImpl, meter };
+}
+
+test("refuses an oversized RPC response body and stops reading it (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // 64 MiB — the size measured at 319 MiB RSS on the unbounded path, and ~4x the transport budget.
+  const { fetchImpl, meter } = mockOversizedBodyRpc(64 * 1024 * 1024);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+  // The read stopped near the budget rather than draining the body. Pinned well under the 64 MiB
+  // the mock would happily serve, so a buffer-then-check implementation fails here.
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `read did not stop early: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("the transport bound is applied to EVERY dig.* method (#2517)", async () => {
+  const calls = [
+    (dig) => dig.getCollection({ storeId: STORE }),
+    (dig) => dig.listCollectionItems({ launcherIds: [STORE] }),
+    (dig) =>
+      dig.read({
+        urn: `urn:dig:chia:${STORE}/index.html`,
+        root: "cd".repeat(32),
+      }),
+  ];
+  for (const call of calls) {
+    const { fetchImpl } = mockOversizedBodyRpc(64 * 1024 * 1024);
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => call(dig),
+      (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+    );
+  }
+});
+
+test("a legitimate-sized response body still parses (#2517)", async () => {
+  // The bound must be picked from the protocol's own per-response ceiling, so a response carrying a
+  // full legal chunk has to pass. Without this side the budget could drift down to anything.
+  const ciphertext = new Uint8Array(3 * 1024 * 1024).fill(7);
+  const { fetchImpl } = mockCiphertextRpc(ciphertext);
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.read({
+    urn: `urn:dig:chia:${STORE}/index.html`,
+    root: "cd".repeat(32),
+  });
+  assert.equal(res.bytes.length, ciphertext.length);
+});
