@@ -1343,3 +1343,79 @@ test("a nested ARRAY in a JSON-RPC error message is refused with a coded error (
     (e) => e instanceof DigSdkError && typeof e.code === "string",
   );
 });
+
+// ---------------------------------------------------------------------------------------------
+// The WHATWG reader loop must measure chunks by the SAME rule the async-iterable loop uses (#2719).
+//
+// `res.body` is TYPED `ReadableStream<Uint8Array>`, but `fetch` is a public injection point and
+// `ReadableStream` is generic, so a shim enqueueing strings has `getReader` and lands in this loop.
+// `"…".byteLength` is `undefined`, `read += undefined` is NaN, and `NaN > MAX` is false — the
+// ceiling is then off for the whole body. Measured before the fix: the reader path pulled all
+// 64 MiB while the async-iterable path stopped at 17 MiB.
+//
+// An error-code assertion alone does NOT discriminate: the unbounded path also throws, because the
+// accumulated garbage fails to parse — and `asBytes`'s refusal shares that same
+// `RPC_MALFORMED_RESPONSE` code. Only BYTES PULLED tells a fired ceiling from a drained body.
+// ---------------------------------------------------------------------------------------------
+
+test("a getReader stream of STRING chunks cannot disable the response ceiling (#2719)", async () => {
+  const meter = { produced: 0 };
+  const total = 64 * 1024 * 1024;
+  const chunk = " ".repeat(1 << 20);
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (meter.produced >= total) return { done: true, value: undefined };
+            meter.produced += chunk.length;
+            return { done: false, value: chunk };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(() =>
+    dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `the reader path drained ${meter.produced} of ${total} bytes: the ceiling never fired`,
+  );
+});
+
+test("a getReader stream chunk that is not bytes is refused, not silently skipped (#2719)", async () => {
+  const chunks = [{ nope: true }];
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            return chunks.length
+              ? { done: false, value: chunks.pop() }
+              : { done: true, value: undefined };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) =>
+      e instanceof DigSdkError &&
+      e.code === "RPC_MALFORMED_RESPONSE" &&
+      /cannot be bounded/.test(e.message),
+  );
+});

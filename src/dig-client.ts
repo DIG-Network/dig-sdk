@@ -812,22 +812,12 @@ async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
     return (await res.json()) as T;
   }
   const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let read = 0;
+  const budget = new ChunkBudget(res, method);
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!value) continue;
-      read += value.byteLength;
-      if (read > MAX_RPC_RESPONSE_BYTES) {
-        throw tooLargeError(
-          res,
-          method,
-          `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
-        );
-      }
-      chunks.push(value);
+      budget.accept(value);
     }
   } finally {
     // Release the connection whether we finished or bailed out mid-body; a hostile node that never
@@ -838,7 +828,65 @@ async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
       /* the stream is already closed or errored — nothing to release */
     }
   }
-  return JSON.parse(new TextDecoder().decode(concatBytes(chunks, read))) as T;
+  return JSON.parse(new TextDecoder().decode(budget.finish())) as T;
+}
+
+/**
+ * The ONE per-chunk accounting rule, shared by both body loops.
+ *
+ * The two loops enforced the same ceiling with two copies of the arithmetic, and they diverged: the
+ * WHATWG loop trusted `value.byteLength` because `res.body` is TYPED `ReadableStream<Uint8Array>`.
+ * That type is an annotation, not a runtime guarantee — `fetch` is a public injection point and
+ * `ReadableStream` is generic, so a shim enqueueing strings lands there with `byteLength ===
+ * undefined`. `read += undefined` is NaN and `NaN > MAX` is false, which switched the ceiling off for
+ * the rest of the body: measured, that path drained all 64 MiB of a hostile response while the
+ * async-iterable path stopped at 17 MiB (#2719).
+ *
+ * Sharing the accounting — not merely the ceiling constant and the refusal — is what stops the two
+ * paths drifting apart a second time.
+ */
+class ChunkBudget {
+  private readonly chunks: Uint8Array[] = [];
+  private read = 0;
+
+  constructor(
+    private readonly res: Response,
+    private readonly method: string,
+  ) {}
+
+  /**
+   * Measure and keep one chunk. Refuses a chunk whose size cannot be established, and refuses the
+   * whole body once the running total passes the ceiling. Ignores an absent or empty chunk.
+   */
+  accept(value: unknown): void {
+    if (value === undefined || value === null) return;
+    const bytes = asBytes(value);
+    // A chunk whose size cannot be measured must REFUSE, never continue: silently skipping it leaves
+    // the reader pulling the rest of an unbounded body with nothing counting it. Failing closed on a
+    // shape we cannot account for is the only safe direction for a size guard.
+    if (bytes === null) {
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        `dig RPC ${this.method} streamed a chunk that is not bytes, so the response size cannot be bounded.`,
+        { rpcMethod: this.method, httpStatus: this.res.status },
+      );
+    }
+    if (bytes.byteLength === 0) return;
+    this.read += bytes.byteLength;
+    if (this.read > MAX_RPC_RESPONSE_BYTES) {
+      throw tooLargeError(
+        this.res,
+        this.method,
+        `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
+      );
+    }
+    this.chunks.push(bytes);
+  }
+
+  /** The accepted chunks flattened into one contiguous buffer. */
+  finish(): Uint8Array {
+    return concatBytes(this.chunks, this.read);
+  }
 }
 
 /**
@@ -879,33 +927,9 @@ async function readBudgeted(
   res: Response,
   method: string,
 ): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let read = 0;
-  for await (const value of source) {
-    const bytes = asBytes(value);
-    // A chunk whose size cannot be measured must REFUSE, never continue. `read += undefined` is
-    // NaN, and `NaN > MAX_RPC_RESPONSE_BYTES` is false — so a single unmeasurable chunk would
-    // silently disable the ceiling for the rest of the body. Failing closed on a shape we cannot
-    // account for is the only safe direction for a size guard.
-    if (bytes === null) {
-      throw new DigSdkError(
-        "RPC_MALFORMED_RESPONSE",
-        `dig RPC ${method} streamed a chunk that is not bytes, so the response size cannot be bounded.`,
-        { rpcMethod: method, httpStatus: res.status },
-      );
-    }
-    if (bytes.byteLength === 0) continue;
-    read += bytes.byteLength;
-    if (read > MAX_RPC_RESPONSE_BYTES) {
-      throw tooLargeError(
-        res,
-        method,
-        `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
-      );
-    }
-    chunks.push(bytes);
-  }
-  return concatBytes(chunks, read);
+  const budget = new ChunkBudget(res, method);
+  for await (const value of source) budget.accept(value);
+  return budget.finish();
 }
 
 /**
