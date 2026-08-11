@@ -879,3 +879,70 @@ function mockChunkOffsetRpc(offset) {
   };
   return { fetchImpl };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Raw-throw containment (#2518). `atob` and `Response.json()` both throw UNCODED errors on a
+// malformed body, and §2 of SPEC.md states without qualification that every failure the SDK
+// surfaces is a `DigSdkError`. A consumer following the documented catch shape
+// (`if (isDigSdkError(e)) handle(); else throw e;`) turns an uncoded throw into an unhandled
+// rejection — process exit on Node >= 15 — from one unauthenticated response.
+// ---------------------------------------------------------------------------------------------
+
+for (const [label, value] of [
+  ["an illegal base64 character", "!"],
+  ["a base64 length that is not a whole quantum", "A"],
+]) {
+  test(`refuses ${label} in ciphertext with a coded error, not a raw DOMException (#2518)`, async () => {
+    const root = "cd".repeat(32);
+    const { fetchImpl } = mockCiphertextValueRpc(value);
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+    );
+  });
+}
+
+// A REAL `Response`, so `json()` throws the same SyntaxError the global fetch would — a mock that
+// merely rejected could not tell us the wrapper catches what the platform actually throws.
+function mockNonJsonBodyRpc(body) {
+  return async () => new Response(body, { status: 200 });
+}
+
+for (const [label, body] of [
+  ["a non-JSON body", "{{{"],
+  ["an empty body", ""],
+]) {
+  test(`refuses ${label} on a 200 with a coded error, not a raw SyntaxError (#2518)`, async () => {
+    const root = "cd".repeat(32);
+    const dig = new DigClient({ fetch: mockNonJsonBodyRpc(body) });
+    // The wrapper sits in the shared RPC transport, so it must hold for the WHOLE public surface,
+    // not just the `getContent` path the sibling guards cover.
+    const calls = [
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      () => dig.readText({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      () => dig.readVerified({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      () => dig.getCollection({ storeId: STORE }),
+      () => dig.listCollectionItems({ storeId: STORE }),
+    ];
+    for (const call of calls) {
+      await assert.rejects(
+        call,
+        (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+      );
+    }
+  });
+}
+
+test("ACCEPTS a chunk offset exactly equal to total_length (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // SPEC.md documents the boundary as "no greater than `total_length`", so `offset === total` is
+  // the largest LEGAL write position (an empty terminal chunk). Pinning it from the accepting side
+  // is what stops the guard drifting to `>=`; the sibling test above pins the refusing side.
+  const { fetchImpl } = mockChunkOffsetRpc(100);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code !== "RPC_MALFORMED_RESPONSE",
+  );
+});

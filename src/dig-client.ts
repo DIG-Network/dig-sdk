@@ -598,7 +598,22 @@ export class DigClient {
           },
         );
       }
-      const chunk = b64ToBytes(b64);
+      // `atob` throws a raw `DOMException` on any string that is not valid base64 — an illegal
+      // character, or a length that is not a whole number of quanta. Ordinary truncation or
+      // corruption produces both, so this fires far more often than a crafted response, and an
+      // uncoded throw escaping `read()` breaks the SDK's contract that every failure it surfaces
+      // is a `DigSdkError` (#2518).
+      let chunk: Uint8Array;
+      try {
+        chunk = b64ToBytes(b64);
+      } catch (cause) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          "The content network returned a ciphertext that is not valid base64.",
+          { rpcMethod: "dig.getContent", chunkLength: b64.length },
+          { cause },
+        );
+      }
       // Validate the WRITE offset before it reaches `TypedArray.set`, which throws a raw
       // `RangeError` when `targetOffset > targetLength` — even for an empty source. A ~60-byte
       // response declaring `offset: 5000` into a 100-byte resource would otherwise escape `read()`
@@ -671,10 +686,23 @@ export class DigClient {
           httpStatus: res.status,
         },
       );
-    const json = (await res.json()) as {
+    // A 200 whose body is not JSON — `{{{`, an empty body, an HTML captive-portal page — makes
+    // `res.json()` throw a raw `SyntaxError`. This is the shared transport for EVERY `dig.*`
+    // method, so an uncoded throw here escapes the whole public surface (#2518).
+    let json: {
       result?: T;
       error?: { message?: string; code?: number };
     };
+    try {
+      json = (await res.json()) as typeof json;
+    } catch (cause) {
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        `dig RPC ${method} returned a body that is not valid JSON.`,
+        { rpcMethod: method, httpStatus: res.status },
+        { cause },
+      );
+    }
     if (json && json.error)
       throw new DigSdkError(
         "RPC_ERROR",
