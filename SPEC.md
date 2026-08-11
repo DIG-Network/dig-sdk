@@ -254,12 +254,28 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
 
 **Salt redaction (normative).** The salt is the out-of-band secret that makes a store private, so it
 MUST NOT be republished by the SDK's own diagnostics. Every `DigSdkError` redacts its context when
-the error is constructed: any `salt=<value>` occurring in a context string — in a well-formed URN, in
-a malformed one, or in free text — is replaced with the literal `<redacted>` before it is stored.
-Consequently no serialized `DigSdkError` (its `context`, its `toJSON()` output, or anything logged
-from them) contains a salt value. Redaction MUST be a strict superset of what the URN grammar
-captures: a salt in a non-final position (`…?salt=<hex>&x=1`, `…?salt=<hex>#frag`) is not captured by
-the URN pattern and MUST still be redacted.
+the error is constructed: any lowercase `salt=<value>` occurring in a string reachable from
+`context` by walking its own enumerable array elements and object properties — in a well-formed URN,
+in a malformed one, or in free text — is replaced with the literal `<redacted>` before it is stored.
+Within that reach, redaction MUST be a strict superset of what the URN grammar captures: a salt in a
+non-final position (`…?salt=<hex>&x=1`, `…?salt=<hex>#frag`) is not captured by the URN pattern and
+MUST still be redacted.
+
+**The bounds of that guarantee (normative — do not read redaction as a blanket one).** Redaction
+covers `context`, and only in the form just described. It does NOT currently cover three cases, each
+of which can carry a salt into a serialized error, so a caller MUST NOT treat a `DigSdkError` as
+safe to log verbatim when a private-store salt may be in play:
+
+- The error's **`message`** is not redacted, and `toJSON()` emits that message unaltered — so
+  `message`, `stack`, `String(err)` and `toJSON()` all expose a salt that reached the message
+  (#2640, #2643).
+- Redaction matches **lowercase `salt=` only**, so an uppercase or mixed-case parameter
+  (`?SALT=…`, `?SaLt=…`) is preserved verbatim. This is reachable through the public API with no
+  hand-built error: `parseUrn("urn:dig:chia:…?SALT=<hex>")` and the corresponding
+  `DigClient.read({ urn })` both surface it (#2638).
+- A context value that is not a string and supplies its own **`toJSON()`** is walked by its own
+  properties, not by that method, so a salt returned only from `toJSON()` survives into serialized
+  output (#2643).
 
 The **canonical, root-INDEPENDENT** form is `urn:dig:chia:<store_id>/<resource_key>` — the form
 whose bytes seed key derivation. `reconstructUrn(storeId, resourceKey)` produces it;
@@ -284,7 +300,11 @@ by the wasm and MUST NOT depend on the root.
 
 `DigClient` calls the dig RPC over JSON-RPC 2.0 (`POST`, `{ jsonrpc:"2.0", id, method, params }`). A
 transport failure is `RPC_TRANSPORT`, an HTTP/JSON-RPC error is `RPC_ERROR`, and a structurally
-absent/inconsistent result is `RPC_MALFORMED_RESPONSE` (§4 catalogue). A read NEVER concludes "not
+absent/inconsistent result is `RPC_MALFORMED_RESPONSE` (§4 catalogue). This includes the body
+itself: a response whose status is success but whose body does not parse as JSON — an empty body, a
+truncated one, an HTML error or captive-portal page — is refused with `RPC_MALFORMED_RESPONSE`. This
+refusal lives in the shared transport, so it holds for EVERY `dig.*` method, and the SDK MUST
+surface it as a coded refusal rather than as the platform's raw parse exception. A read NEVER concludes "not
 found": the oblivious host returns indistinguishable ciphertext for any key, so a missing resource
 is just opaque bytes that fail to decrypt.
 
@@ -311,12 +331,18 @@ is just opaque bytes that fail to decrypt.
   response above the ceiling is refused with `RESOURCE_TOO_LARGE` and never decoded. The aggregate
   `total_length` ceiling above does not cover this case: a response may declare a tiny resource and
   still carry an arbitrarily large body.
-- **Response-shape validation:** `ciphertext` MUST be a string. A non-string (an array, a number, a
+- **Response-shape validation:** when present, `ciphertext` MUST be a string (an absent or `null`
+  `ciphertext` is read as an empty chunk). A non-string (an array, a number, a
   boolean, an object) is refused with `RPC_MALFORMED_RESPONSE` and never decoded — base64 decoding
   coerces its argument, so a non-string would otherwise slip past the size ceiling above, which
   measures the value's `length`. Likewise the returned `offset` MUST be a non-negative integer no
   greater than `total_length`; anything else is refused with `RPC_MALFORMED_RESPONSE` rather than
   used as a write position into the reassembly buffer.
+- **Base64 validity:** a `ciphertext` that is a string but not valid base64 — an illegal character,
+  or a length that is not a whole number of 4-character quanta — is refused with
+  `RPC_MALFORMED_RESPONSE`. Ordinary truncation or corruption produces both forms, so this is a
+  routine wire fault rather than an attack-only case, and the SDK MUST surface it as a coded refusal
+  rather than as the platform's raw decode exception.
 - **Page ceiling:** one resource is reassembled from at most **4096** `dig.getContent` responses. A
   node that has not completed the resource by then is refused with `RESOURCE_TOO_LARGE` — each
   response is well-formed, so this is a client resource ceiling rather than a wire-format fault.
