@@ -611,7 +611,12 @@ test("refuses a non-streaming response whose content-length exceeds the ceiling 
     if (!init || typeof init.body !== "string") return { ok: false };
     return {
       ok: true,
-      headers: { get: (name) => (name.toLowerCase() === "content-length" ? String(oversizedLength) : null) },
+      headers: {
+        get: (name) =>
+          name.toLowerCase() === "content-length"
+            ? String(oversizedLength)
+            : null,
+      },
       async json() {
         return {
           jsonrpc: "2.0",

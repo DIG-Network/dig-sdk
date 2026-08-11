@@ -745,20 +745,17 @@ export class DigClient {
 async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
   const body: ReadableStream<Uint8Array> | null | undefined = res.body;
   if (!body || typeof body.getReader !== "function") {
-    const clHeader = res.headers.get("content-length");
-    if (clHeader) {
-      const cl = Number(clHeader);
-      if (Number.isFinite(cl) && cl > MAX_RPC_RESPONSE_BYTES) {
-        throw new DigSdkError(
-          "RESOURCE_TOO_LARGE",
-          `dig RPC ${method} declared content-length ${cl} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
-          {
-            rpcMethod: method,
-            httpStatus: res.status,
-            maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
-          },
-        );
-      }
+    const declared = declaredContentLength(res);
+    if (declared !== null && declared > MAX_RPC_RESPONSE_BYTES) {
+      throw new DigSdkError(
+        "RESOURCE_TOO_LARGE",
+        `dig RPC ${method} declared content-length ${declared} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
+        {
+          rpcMethod: method,
+          httpStatus: res.status,
+          maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
+        },
+      );
     }
     return (await res.json()) as T;
   }
@@ -794,6 +791,24 @@ async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
     }
   }
   return JSON.parse(new TextDecoder().decode(concatBytes(chunks, read))) as T;
+}
+
+/**
+ * The response's declared `content-length` as a non-negative finite number, or `null` when it is
+ * absent, unparseable, or the response object has no `headers` at all.
+ *
+ * ADVISORY ONLY, and deliberately so: this reads a header the node itself supplies, on the leg where
+ * no stream is available to measure. A hostile node can omit it or lie low, which is why the
+ * streaming budget — not this — is the real bound. Its value is that it refuses an oversized body
+ * BEFORE `res.json()` on that leg, and the leg exists because a `Response`-shaped object is not
+ * guaranteed to be a `Response`: reading `headers` unconditionally throws a TypeError on any shim
+ * that omits it, which is not a failure mode a size guard may introduce.
+ */
+function declaredContentLength(res: Response): number | null {
+  const raw = res.headers?.get?.("content-length");
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 /** Flatten `chunks` (totalling `length` bytes) into one contiguous buffer. */
