@@ -15,15 +15,21 @@ const SALT_PARAM = "salt=";
  */
 const markerRe = new RegExp(`(?:^|&)${SALT_PARAM}`);
 
-/** The salt VALUE inside a tail already judged to BE a query. */
-const valueRe = new RegExp(`(?:^|&)${SALT_PARAM}([0-9a-fA-F]+)`);
+/**
+ * The salt VALUE inside a tail already judged to BE a query. Its separator set is WIDER than the
+ * marker's: once a `?` has been judged to start the query, every later `?` is inside it.
+ */
+const valueRe = new RegExp(`(?:^|[&?])${SALT_PARAM}([0-9a-fA-F]+)`);
+
+/** The value scanner as it read BEFORE the SPEC alignment — `&` only. Kept to measure the change. */
+const narrowValueRe = new RegExp(`(?:^|&)${SALT_PARAM}([0-9a-fA-F]+)`);
 
 /** The reference split: the first `?` whose tail carries a salt parameter wins. */
-export function referenceSplitQuery(s) {
+export function referenceSplitQuery(s, valuePattern = valueRe) {
   for (let at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
     const query = s.slice(at + 1);
     if (!markerRe.test(query)) continue;
-    const m = valueRe.exec(query);
+    const m = valuePattern.exec(query);
     return { base: s.slice(0, at), salt: m ? m[1].toLowerCase() : null };
   }
   return { base: s, salt: null };
@@ -32,8 +38,8 @@ export function referenceSplitQuery(s) {
 const PATH_RE = /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+)$/;
 
 /** What `parseUrn` must produce for `urn`, as a comparable string (`"THROW"` when it must reject). */
-export function referenceParse(urn) {
-  const { base, salt } = referenceSplitQuery(String(urn).trim());
+export function referenceParse(urn, valuePattern = valueRe) {
+  const { base, salt } = referenceSplitQuery(String(urn).trim(), valuePattern);
   const m = PATH_RE.exec(base);
   return m ? `${m[1].toLowerCase()}|${m[2] ?? ""}|${m[3]}|${salt}` : "THROW";
 }
@@ -67,6 +73,11 @@ const TOKENS = [
 ];
 
 /** Every token sequence of length 1..`maxLen`, as a resource-key tail. */
+/** The pre-alignment reading of the same URN, for measuring exactly what the widening changed. */
+export function narrowParse(urn) {
+  return referenceParse(urn, narrowValueRe);
+}
+
 export function* generatedTails(maxLen = 5) {
   const build = function* (prefix, depth) {
     if (prefix !== "") yield prefix;

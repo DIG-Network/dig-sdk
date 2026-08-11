@@ -255,9 +255,19 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
 **Query handling (normative).** A `<resource_key>` MAY contain any character, `?` and `#` included, so
 a trailing segment is NOT assumed to be a query.
 
-**One boundary rule governs both decisions.** A `salt=` counts only where it sits at a **parameter
-boundary** — at the start of a query segment (the text following some `?`), or immediately after an
-`&`. A parser MUST split a query off ONLY when such a boundary `salt=` is present; otherwise the whole
+**Two decisions, one parameter name, two separator sets.** A `salt=` counts only where it sits at a
+**parameter boundary**, and the boundary set depends on which decision is being made:
+
+- **Which `?` STARTS the query.** A `?` qualifies only when the text after it begins with `salt=` or
+  contains `&salt=`. A `?`-borne `salt=` MUST NOT qualify an earlier `?`: otherwise
+  `report?year=2024.csv?salt=ff00ff00` would split at its FIRST `?` and truncate a real,
+  already-published key to `report`.
+- **Where the salt sits INSIDE the chosen query.** Once a `?` has been judged to start the query,
+  every later `?` is *inside* the query and is a separator: within that tail, `salt=` counts at the
+  start, after an `&`, **and** after a `?`. So `a?salt=zz?salt=ff00ff00` carries the salt
+  `ff00ff00` — a parser honouring only `&` here derives no salt at all and silently cannot decrypt.
+
+A parser MUST split a query off ONLY when a qualifying `?` is present; otherwise the whole
 remainder is part of `<resource_key>` and MUST be preserved verbatim. A `salt=` occurring inside another
 parameter's value is therefore neither a salt **nor** a query marker: `data?desalt=9.json`,
 `report?tag=salt=1.csv` and `secret.txt?note=salt=ff00ff00` keep their queries as part of the key.
@@ -267,8 +277,8 @@ appended after a second `?` (`report?year=2024.csv?salt=<hex>`) is the grammar's
 recognized. When more than one `?` carries a boundary `salt=`, the FIRST such `?` wins — it strips the
 most, so no later `salt=` can survive inside `<resource_key>`.
 
-A parser MUST NOT recognize the query with a broader test than it recognizes the salt. Splitting on an
-unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a
+A parser MUST NOT recognize the query with a broader test than it recognizes a *qualifying* `salt=`.
+Splitting on an unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a
 different retrieval key for content that is already published on chain — unreadable, and unmigratable.
 `report?year=2024.csv` and `notes#1.md` are likewise valid, working keys, and a parser that strips
 either derives a different retrieval key and cannot read already-published content.
@@ -285,8 +295,8 @@ query parser (e.g. `URLSearchParams`) does NOT satisfy them and will derive a di
 - **No percent-decoding.** The value is taken verbatim; `?salt=%61%61` is NOT the salt `aa`, it is no
   salt at all.
 - **The parameter name is case-sensitive.** `?SALT=<hex>` is not a salt parameter.
-- **Parameter boundary required** (the rule above): `salt=` counts only at the start of the query or
-  immediately after an `&`; inside another parameter's value it is not a salt.
+- **Parameter boundary required** (the rule above): within the chosen query, `salt=` counts at the
+  start, after an `&`, or after a `?`; inside another parameter's value it is not a salt.
 - **The first boundary occurrence carrying a hex value wins.** On `?salt=aaaa&salt=bbbb` the salt is
   `aaaa`. An earlier occurrence whose value is empty or does not begin with a hex digit is skipped,
   so `?salt=&salt=bbbb` yields `bbbb` — a parser that stops at the first occurrence unconditionally

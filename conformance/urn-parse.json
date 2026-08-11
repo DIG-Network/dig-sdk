@@ -261,6 +261,16 @@
       }
     },
     {
+      "name": "a chosen query tail carrying a further '?'-borne salt=: once a '?' has been judged to START the query, every later '?' inside it is a separator, so the salt is read there too. Honouring only '&' inside the tail derived NO salt for this URN — silently undecryptable — while SPEC's boundary definition names it",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/a?salt=zz?salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "a",
+        "salt": "ff00ff00"
+      }
+    },
+    {
       "name": "a URN whose resource key is ONLY a salt query has an empty key once the query is removed, and an empty resource key is not a URN",
       "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/?salt=ff00ff00",
       "expect": {

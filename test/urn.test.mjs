@@ -183,3 +183,73 @@ test("the linear split agrees with the reference rule on every generated input (
   assert.ok(compared > 100_000, `only ${compared} inputs compared`);
   assert.deepEqual(differences, [], `compared ${compared} inputs`);
 });
+
+// ---------------------------------------------------------------------------------------------
+// The salt VALUE is read at `?` boundaries too, so SPEC §7.1 and the scanner derive the same key.
+//
+// SPEC defines a boundary as "the start of a query segment (the text following some `?`), or
+// immediately after an `&`", with the FIRST boundary occurrence carrying a hex value winning. The
+// value scanner only honoured `&`, so the two derived different keys — and the code's answer was the
+// silently-unusable one:
+//
+//   a?salt=zz?salt=ff00ff00                     code: null (cannot decrypt)   SPEC: ff00ff00
+//   report?year=2024.csv?salt=aaaa&salt=bbbb    code: bbbb (last)             SPEC: aaaa (first)
+//
+// Only the VALUE scanner widens. The SPLIT marker must NOT: if a `?`-borne `salt=` could decide
+// which `?` starts the query, `report?year=2024.csv?salt=ff` would qualify at its FIRST `?` and
+// truncate a real, already-published key back to `report`.
+// ---------------------------------------------------------------------------------------------
+
+test("a '?'-borne salt inside the chosen query is read as the salt (#2719)", () => {
+  const parsed = parseUrn(`urn:dig:chia:${STORE}/a?salt=zz?salt=ff00ff00`);
+  assert.equal(parsed.resourceKey, "a");
+  assert.equal(parsed.salt, "ff00ff00");
+});
+
+test("the FIRST boundary salt in the query wins, whichever separator introduced it (#2719)", () => {
+  const parsed = parseUrn(
+    `urn:dig:chia:${STORE}/report?year=2024.csv?salt=aaaa&salt=bbbb`,
+  );
+  assert.equal(parsed.salt, "aaaa");
+});
+
+test("a '?'-borne salt does NOT decide which '?' starts the query (#2719)", () => {
+  // The regression the widened VALUE scanner must not cause. Widening the SPLIT marker as well would
+  // make the first `?` qualify and truncate this working key back to `report`.
+  const parsed = parseUrn(`urn:dig:chia:${STORE}/report?year=2024.csv?salt=ff`);
+  assert.equal(parsed.resourceKey, "report?year=2024.csv");
+  assert.equal(parsed.salt, "ff");
+});
+
+// Widening the VALUE scanner is a behaviour CHANGE, so it is measured rather than asserted: the
+// sweep reports how many of the generated inputs it moves, and pins the two properties that make
+// the change safe — the resource key is never affected (only the salt is), and no input that had a
+// usable salt before loses it.
+test("widening the salt scanner changes only salts, and takes none away (#2719)", async () => {
+  const { referenceParse, narrowParse, generatedTails } = await import(
+    "./urn-splitquery-equivalence.mjs"
+  );
+  let compared = 0;
+  let changed = 0;
+  const keyChanges = [];
+  const saltsLost = [];
+  for (const tail of generatedTails()) {
+    const urn = `urn:dig:chia:${STORE}/${tail}`;
+    compared++;
+    const before = narrowParse(urn);
+    const after = referenceParse(urn);
+    if (before === after) continue;
+    changed++;
+    const [, , keyBefore, saltBefore] = before.split("|");
+    const [, , keyAfter, saltAfter] = after.split("|");
+    if (keyBefore !== keyAfter && keyChanges.length < 5) {
+      keyChanges.push(`${tail}: ${keyBefore} -> ${keyAfter}`);
+    }
+    if (saltBefore !== "null" && saltsLost.length < 5) {
+      saltsLost.push(`${tail}: ${saltBefore} -> ${saltAfter}`);
+    }
+  }
+  assert.deepEqual(keyChanges, [], "the widening moved a resource key");
+  assert.deepEqual(saltsLost, [], "the widening removed a previously-read salt");
+  assert.ok(changed > 0, `the widening changed nothing across ${compared} inputs`);
+});

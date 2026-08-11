@@ -60,17 +60,15 @@ export interface ParsedUrn {
 const URN_PATH_RE =
   /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+)$/;
 
-// THE ONE BOUNDARY RULE. A `salt=` counts only at the start of the query or immediately after an
-// `&` — never inside another parameter's value. Both decisions this module makes about a query tail
-// are derived from this single source: whether the tail IS a query at all, and what salt it carries.
+// THE PARAMETER NAME — the one thing both decisions about a query tail share. A `salt=` counts only
+// at a parameter BOUNDARY, never inside another parameter's value: `…/data?desalt=9.json` contains
+// the substring at no boundary, carries no salt and no secret, and an unanchored predicate stripped
+// its whole query and derived a different retrieval key than 0.6.3 — unmigratable, since the content
+// is already on chain.
 //
-// They were once two predicates on one concept — an UNANCHORED `query.includes("salt=")` for the
-// split, this anchored one for the value — and the broader one destroyed working keys. A key such as
-// `…/data?desalt=9.json` contains the substring `salt=` at no parameter boundary: it carries no salt,
-// no secret, and nothing to protect, yet it lost its entire query and derived a different retrieval
-// key than 0.6.3 — an unmigratable regression, since the content is already on chain. Sharing the
-// source makes "the split decision is exactly as strict as the salt decision" structural rather than
-// a comment that the two can drift away from.
+// What the two decisions do NOT share is their SEPARATOR SET, and pretending otherwise is the defect
+// shape this file has now hit twice. Each is spelled out below, at its own definition, with the
+// reason it differs — rather than two bare literals free to drift apart.
 const SALT_PARAM_NAME = "salt=";
 
 // The literal the SPLIT decision scans for: a salt parameter introduced by an `&`. The other way a
@@ -81,10 +79,22 @@ const SALT_AFTER_AMP = `&${SALT_PARAM_NAME}`;
 // The salt VALUE, read from a tail that has ALREADY been judged to be a query. The hex class
 // terminates the value at the first non-hex character, so a trailing `&next=…` or `#fragment` ends it.
 //
-// It answers a DIFFERENT question from the split (which `?` starts the query, vs where the salt sits
-// inside it), so the two are written out separately rather than sharing one literal.
+// ITS SEPARATOR SET IS DELIBERATELY WIDER THAN THE SPLIT'S — that difference is why the two are
+// written out separately instead of sharing one literal, and why each states its own set here.
+// Restated: they answer different questions.
+//
+//   • the SPLIT asks "does this `?` START the query?", and only an `&salt=` may answer yes. Widening
+//     it would make `report?year=2024.csv?salt=ff` qualify at its FIRST `?` and truncate a real,
+//     already-published key back to `report`.
+//   • this asks "where is the salt INSIDE the query?" — and once a `?` has been judged to start the
+//     query, every later `?` is inside it and is a separator, not part of a parameter name.
+//
+// The wider set is what SPEC §7.1 already specifies (a boundary is "the start of a query segment …
+// or immediately after an `&`", first boundary occurrence carrying a HEX value wins). Honouring only
+// `&` made the code and the SPEC derive different keys, and the code's answer was the silently
+// unusable one: `a?salt=zz?salt=ff00ff00` yielded no salt at all, so nothing could decrypt.
 const SALT_QUERY_VALUE_RE = new RegExp(
-  `(?:^|&)${SALT_PARAM_NAME}([0-9a-fA-F]+)`,
+  `(?:^|[&?])${SALT_PARAM_NAME}([0-9a-fA-F]+)`,
 );
 
 /**
