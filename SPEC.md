@@ -261,6 +261,15 @@ Within that reach, redaction MUST be a strict superset of what the URN grammar c
 non-final position (`…?salt=<hex>&x=1`, `…?salt=<hex>#frag`) is not captured by the URN pattern and
 MUST still be redacted.
 
+**Error construction is TOTAL (normative).** Constructing a `DigSdkError` MUST NOT throw, whatever
+shape `context` has. A throw during construction happens inside a `throw new DigSdkError(...)`
+expression that no call site can wrap, so it replaces a coded, catchable refusal with an uncoded
+error escaping the whole public surface. The context walk is therefore bounded in every direction a
+hostile value can be shaped — cycles are collapsed, nesting is walked at most **32** levels deep
+(deeper values are replaced with `<omitted>`), and a property whose read throws yields `<omitted>` —
+and any residual failure degrades to a context of `{ contextRedactionFailed: true }`. Diagnostic
+detail MAY be lost; the error's `code` MUST survive.
+
 **The bounds of that guarantee (normative — do not read redaction as a blanket one).** Redaction
 covers `context`, and only in the form just described. It does NOT currently cover three cases, each
 of which can carry a salt into a serialized error, so a caller MUST NOT treat a `DigSdkError` as
@@ -331,6 +340,15 @@ is just opaque bytes that fail to decrypt.
   response above the ceiling is refused with `RESOURCE_TOO_LARGE` and never decoded. The aggregate
   `total_length` ceiling above does not cover this case: a response may declare a tiny resource and
   still carry an arbitrarily large body.
+- **Response-body ceiling (every `dig.*` method):** the RAW body bytes of ANY single JSON-RPC
+  response are bounded at **16 MiB** while the body is being READ — the SDK streams the response and
+  refuses with `RESOURCE_TOO_LARGE` the moment the budget is exceeded, WITHOUT reading the remainder
+  and WITHOUT parsing what it read. It MUST NOT truncate-then-parse: a partial parse would either
+  fail as a spurious malformed-response fault or yield a partial result a caller would treat as
+  complete. This is the outermost of the three size bounds and the only one that limits what is ever
+  resident: the ceilings above run after parsing, so a node may declare `total_length: 100` and
+  answer with an arbitrarily large body. 16 MiB is twice the ~8 MiB a base64-encoded 6 MiB
+  per-response ciphertext ceiling implies, so every legal response fits.
 - **Response-shape validation:** when present, `ciphertext` MUST be a string (an absent or `null`
   `ciphertext` is read as an empty chunk). A non-string (an array, a number, a
   boolean, an object) is refused with `RPC_MALFORMED_RESPONSE` and never decoded — base64 decoding
@@ -349,7 +367,8 @@ is just opaque bytes that fail to decrypt.
 - **Strict forward progress:** while `complete` is false, each returned `next_offset` MUST be
   strictly greater than the offset just requested. A `next_offset` that repeats or rewinds the
   current offset is refused with `RPC_MALFORMED_RESPONSE`; the client MUST NOT loop on it.
-- NOTE: like the 512 MiB bound, the 6 MiB per-response ceiling, the 4096-page ceiling and the
+- NOTE: like the 512 MiB bound, the 6 MiB per-response ceiling, the 16 MiB response-body ceiling,
+  the 4096-page ceiling and the
   refusal codes attached to them are SDK-chosen client-side refusal policy. They are not normative
   wire constants negotiated with the RPC, and a second implementation is not required to match them.
 
