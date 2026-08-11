@@ -855,11 +855,13 @@ class ChunkBudget {
   ) {}
 
   /**
-   * Measure and keep one chunk. Refuses a chunk whose size cannot be established, and refuses the
-   * whole body once the running total passes the ceiling. Ignores an absent or empty chunk.
+   * Measure and keep one chunk. Refuses a chunk whose size cannot be established — including an
+   * ABSENT one, which the reader loop used to skip: a shim yielding `{ done: false, value:
+   * undefined }` forever would otherwise spin the loop with nothing counting it. Refuses the whole
+   * body once the running total passes the ceiling. An empty chunk is kept out of the buffer list
+   * but is not an error; a real stream may legitimately emit one.
    */
   accept(value: unknown): void {
-    if (value === undefined || value === null) return;
     const bytes = asBytes(value);
     // A chunk whose size cannot be measured must REFUSE, never continue: silently skipping it leaves
     // the reader pulling the rest of an unbounded body with nothing counting it. Failing closed on a
