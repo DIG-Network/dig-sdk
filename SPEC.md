@@ -311,6 +311,12 @@ is just opaque bytes that fail to decrypt.
   response above the ceiling is refused with `RESOURCE_TOO_LARGE` and never decoded. The aggregate
   `total_length` ceiling above does not cover this case: a response may declare a tiny resource and
   still carry an arbitrarily large body.
+- **Response-shape validation:** `ciphertext` MUST be a string. A non-string (an array, a number, a
+  boolean, an object) is refused with `RPC_MALFORMED_RESPONSE` and never decoded — base64 decoding
+  coerces its argument, so a non-string would otherwise slip past the size ceiling above, which
+  measures the value's `length`. Likewise the returned `offset` MUST be a non-negative integer no
+  greater than `total_length`; anything else is refused with `RPC_MALFORMED_RESPONSE` rather than
+  used as a write position into the reassembly buffer.
 - **Page ceiling:** one resource is reassembled from at most **4096** `dig.getContent` responses. A
   node that has not completed the resource by then is refused with `RESOURCE_TOO_LARGE` — each
   response is well-formed, so this is a client resource ceiling rather than a wire-format fault.
