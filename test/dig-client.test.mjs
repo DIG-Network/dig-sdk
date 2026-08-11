@@ -534,3 +534,415 @@ test("a non-URN context string containing salt= is redacted, no crash (#2303)", 
     `salt leaked from a plain context string: ${serializeErrorFull(err)}`,
   );
 });
+
+// ---------------------------------------------------------------------------------------------
+// #2517 — the two client-side resource paths the #2303 `total_length` ceiling does NOT bound.
+//
+// #2303 bounds the DECLARED aggregate length before allocating the reassembly buffer. It says
+// nothing about (a) how big ONE response's ciphertext may be, or (b) how many responses the client
+// will accept. Both fixtures below therefore declare a TINY, perfectly legal `total_length`, so a
+// build carrying only the #2303 guard cannot pass them: whatever refuses must be a new bound.
+// ---------------------------------------------------------------------------------------------
+
+// A node that declares a 100-byte resource and then returns `b64Bytes` of base64 ciphertext in a
+// single response. `total_length` is legal, so only a PER-RESPONSE bound can refuse this.
+function mockOversizedChunkRpc(b64Bytes) {
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 100,
+            offset: 0,
+            ciphertext: "A".repeat(b64Bytes),
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+  return { fetchImpl };
+}
+
+test("refuses a single oversized RPC response with RESOURCE_TOO_LARGE (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // 12 MiB of base64 → ~9 MiB decoded, above the per-response ceiling but far below the 512 MiB
+  // aggregate ceiling and paired with a 100-byte declared total_length, so #2303's guard is blind
+  // to it. Sized in base64 characters because that is what the client sees before it decodes.
+  const { fetchImpl } = mockOversizedChunkRpc(12 * 1024 * 1024);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+});
+
+test("accepts a single response at the per-response ceiling (#2517)", async () => {
+  // The bound pinned from BOTH sides: a response the size the backend legitimately serves must
+  // still be read. 3 MiB of base64 (~2.25 MiB decoded) is a normal full chunk.
+  const root = "cd".repeat(32);
+  const { fetchImpl } = mockOversizedChunkRpc(3 * 1024 * 1024);
+  const dig = new DigClient({ fetch: fetchImpl });
+  // The read must reach the crypto stage rather than being refused up front. Whether the garbage
+  // ciphertext then decrypts is beside the point; the only forbidden outcome is the size refusal.
+  let refusal = null;
+  try {
+    await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  } catch (e) {
+    refusal = e;
+  }
+  assert.ok(
+    !(refusal instanceof DigSdkError && refusal.code === "RESOURCE_TOO_LARGE"),
+    `a legitimate full chunk was refused as oversized: ${refusal?.message}`,
+  );
+});
+
+// A node that never completes. `advance` bytes of forward progress per page: 0 exercises the
+// strict-progress guard, 1 exercises the max-page cap (progress is real but uselessly slow).
+function mockNeverCompletingRpc(advance) {
+  const calls = { n: 0 };
+  let next = 0;
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    calls.n += 1;
+    // Safety valve so an UNFIXED build terminates the test run instead of spinning forever. It is
+    // three orders of magnitude above the page cap, so it can only be reached by a client with no
+    // bound at all — and it surfaces as a DIFFERENT error code, keeping the assertion falsifiable.
+    if (calls.n > 50_000)
+      throw new Error("mock safety valve: client never stopped paging");
+    const offset = next;
+    next += advance;
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 64 * 1024 * 1024,
+            offset,
+            next_offset: next,
+            ciphertext: "",
+            inclusion_proof: "",
+            complete: false,
+          },
+        };
+      },
+    };
+  };
+  return { fetchImpl, calls };
+}
+
+test(
+  "refuses a node whose next_offset never advances, instead of spinning (#2517)",
+  { timeout: 20_000 },
+  async () => {
+    const root = "cd".repeat(32);
+    const { fetchImpl, calls } = mockNeverCompletingRpc(0);
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+    );
+    // Refused on the FIRST non-advancing response, not after the page cap —
+    // proves the strict-progress guard fired, not merely the iteration ceiling.
+    assert.equal(calls.n, 1);
+  },
+);
+
+test(
+  "refuses a node that advances but never completes, after exactly MAX_CONTENT_PAGES pages (#2517)",
+  { timeout: 20_000 },
+  async () => {
+    const root = "cd".repeat(32);
+    const { fetchImpl, calls } = mockNeverCompletingRpc(1);
+    const dig = new DigClient({ fetch: fetchImpl });
+    let err = null;
+    try {
+      await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+    } catch (e) {
+      err = e;
+    }
+    // A well-formed-but-endless node is a client resource ceiling, not a wire-format fault.
+    assert.ok(err instanceof DigSdkError, `expected a DigSdkError, got ${err}`);
+    assert.equal(err.code, "RESOURCE_TOO_LARGE");
+    // Pin the CONSTANT, not a range: a range assertion is satisfied by any cap in the window, so a
+    // cap silently changed to 3000 (or a guard that fires early) would pass unnoticed. The client
+    // reports its own ceiling in `maxPages`, and the request count must equal it exactly — one
+    // request per permitted page, refusing on the page that would exceed the ceiling.
+    assert.equal(err.context.maxPages, 4096);
+    assert.equal(calls.n, err.context.maxPages);
+  },
+);
+
+// ---------------------------------------------------------------------------------------------
+// The paging loop's SUCCESS path. Both loop guards (#2517) sit on it, and every other paging test
+// asserts a refusal — so without this a guard that refused EVERYTHING would still look green.
+// ---------------------------------------------------------------------------------------------
+
+// A node that serves an 8-byte resource as two legal 4-byte pages, the second completing it.
+function mockTwoPageRpc() {
+  const pages = [
+    { bytes: [1, 2, 3, 4], offset: 0, next_offset: 4, complete: false },
+    { bytes: [5, 6, 7, 8], offset: 4, next_offset: null, complete: true },
+  ];
+  const calls = { n: 0, offsets: [] };
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    const asked = JSON.parse(init.body).params.offset;
+    calls.n += 1;
+    calls.offsets.push(asked);
+    const p = pages.find((q) => q.offset === asked);
+    if (!p)
+      throw new Error(`client asked for an offset no page serves: ${asked}`);
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 8,
+            offset: p.offset,
+            next_offset: p.next_offset,
+            ciphertext: Buffer.from(p.bytes).toString("base64"),
+            inclusion_proof: "",
+            complete: p.complete,
+          },
+        };
+      },
+    };
+  };
+  return { fetchImpl, calls };
+}
+
+test("reassembles a two-page read into the served bytes, in order (#2517)", async () => {
+  const root = "cd".repeat(32);
+  const { fetchImpl, calls } = mockTwoPageRpc();
+  const dig = new DigClient({ fetch: fetchImpl });
+  // `read` is the oblivious primitive: undecryptable bytes come back as `decrypted: false` with the
+  // RAW reassembled ciphertext, which is exactly what makes the loop's output observable here.
+  const r = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  assert.deepEqual([...r.bytes], [1, 2, 3, 4, 5, 6, 7, 8]);
+  // The client followed `next_offset` rather than re-requesting or over-requesting.
+  assert.deepEqual(calls.offsets, [0, 4]);
+  assert.equal(calls.n, 2);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The per-response ceiling pinned at the BOUND itself. The 3 MiB / 12 MiB pair above brackets it
+// only loosely, so an off-by-a-factor in the base64→bytes estimate would survive both.
+// ---------------------------------------------------------------------------------------------
+
+// Base64 carries 3 bytes per 4 characters, so this many characters decode to exactly the ceiling.
+const B64_CHARS_AT_CEILING = (6 * 1024 * 1024 * 4) / 3;
+
+test("accepts a response decoding to EXACTLY the per-response ceiling (#2517)", async () => {
+  const root = "cd".repeat(32);
+  const { fetchImpl } = mockOversizedChunkRpc(B64_CHARS_AT_CEILING);
+  const dig = new DigClient({ fetch: fetchImpl });
+  let refusal = null;
+  try {
+    await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  } catch (e) {
+    refusal = e;
+  }
+  assert.ok(
+    !(refusal instanceof DigSdkError && refusal.code === "RESOURCE_TOO_LARGE"),
+    `a response AT the ceiling was refused as oversized: ${refusal?.message}`,
+  );
+});
+
+test("refuses a response one base64 quantum OVER the per-response ceiling (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // +4 characters is the smallest step that raises the floored decoded size at all (+3 bytes).
+  const { fetchImpl } = mockOversizedChunkRpc(B64_CHARS_AT_CEILING + 4);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The per-response ceiling measures `ciphertext.length`, so it only binds when `ciphertext` is a
+// STRING. `JSON.parse` can hand the client an array, a number, a boolean or an object, and `atob`
+// coerces all of them — so the type guard is what makes the ceiling a ceiling.
+// ---------------------------------------------------------------------------------------------
+
+// Serve an arbitrary JSON value as `ciphertext`, with a legal 100-byte `total_length`.
+function mockCiphertextValueRpc(value) {
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 100,
+            offset: 0,
+            ciphertext: value,
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+  return { fetchImpl };
+}
+
+test("refuses an oversized payload smuggled as a one-element ciphertext array (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // The SAME payload the plain-string test above proves is refused — wrapped in an array, whose
+  // `.length` is 1 while `atob`'s ToString coercion still decodes every byte of the element. If the
+  // guard only saw the wrapper's length, this read would succeed and the ceiling would be a fiction.
+  const payload = "A".repeat(12 * 1024 * 1024);
+  const { fetchImpl } = mockCiphertextValueRpc([payload]);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+  );
+});
+
+test("refuses a nested-array ciphertext (#2517)", async () => {
+  const root = "cd".repeat(32);
+  const { fetchImpl } = mockCiphertextValueRpc([
+    ["A".repeat(12 * 1024 * 1024)],
+  ]);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+  );
+});
+
+for (const [label, value] of [
+  ["a number", 12345],
+  ["a boolean", true],
+  ["an object", {}],
+]) {
+  test(`refuses ${label} as ciphertext with a coded error (#2517)`, async () => {
+    const root = "cd".repeat(32);
+    // Without the type guard these compare as `NaN > MAX`, which is FALSE — the ceiling fails OPEN
+    // — and the object case reaches `atob` and surfaces an uncoded DOMException.
+    const { fetchImpl } = mockCiphertextValueRpc(value);
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+    );
+  });
+}
+
+test("refuses an out-of-range chunk offset with a coded error, not a raw RangeError (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // `TypedArray.set` throws a RangeError when the target offset exceeds the buffer — even for an
+  // empty source — and a raw RangeError escaping `read()` breaks the SDK's contract that every
+  // failure it surfaces is a DigSdkError.
+  const { fetchImpl } = mockChunkOffsetRpc(5000);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+  );
+});
+
+// Serve an empty chunk at an arbitrary declared `offset` into a 100-byte resource.
+function mockChunkOffsetRpc(offset) {
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 100,
+            offset,
+            ciphertext: "",
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+  return { fetchImpl };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Raw-throw containment (#2518). `atob` and `Response.json()` both throw UNCODED errors on a
+// malformed body, and §2 of SPEC.md states without qualification that every failure the SDK
+// surfaces is a `DigSdkError`. A consumer following the documented catch shape
+// (`if (isDigSdkError(e)) handle(); else throw e;`) turns an uncoded throw into an unhandled
+// rejection — process exit on Node >= 15 — from one unauthenticated response.
+// ---------------------------------------------------------------------------------------------
+
+for (const [label, value] of [
+  ["an illegal base64 character", "!"],
+  ["a base64 length that is not a whole quantum", "A"],
+]) {
+  test(`refuses ${label} in ciphertext with a coded error, not a raw DOMException (#2518)`, async () => {
+    const root = "cd".repeat(32);
+    const { fetchImpl } = mockCiphertextValueRpc(value);
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+    );
+  });
+}
+
+// A REAL `Response`, so `json()` throws the same SyntaxError the global fetch would — a mock that
+// merely rejected could not tell us the wrapper catches what the platform actually throws.
+function mockNonJsonBodyRpc(body) {
+  return async () => new Response(body, { status: 200 });
+}
+
+for (const [label, body] of [
+  ["a non-JSON body", "{{{"],
+  ["an empty body", ""],
+]) {
+  test(`refuses ${label} on a 200 with a coded error, not a raw SyntaxError (#2518)`, async () => {
+    const root = "cd".repeat(32);
+    const dig = new DigClient({ fetch: mockNonJsonBodyRpc(body) });
+    // The wrapper sits in the shared RPC transport, so it must hold for the WHOLE public surface,
+    // not just the `getContent` path the sibling guards cover.
+    const calls = [
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      () => dig.readText({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      () => dig.readVerified({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      () => dig.getCollection({ storeId: STORE }),
+      () => dig.listCollectionItems({ storeId: STORE }),
+    ];
+    for (const call of calls) {
+      await assert.rejects(
+        call,
+        (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+      );
+    }
+  });
+}
+
+test("ACCEPTS a chunk offset exactly equal to total_length (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // SPEC.md documents the boundary as "no greater than `total_length`", so `offset === total` is
+  // the largest LEGAL write position (an empty terminal chunk). Pinning it from the accepting side
+  // is what stops the guard drifting to `>=`; the sibling test above pins the refusing side.
+  const { fetchImpl } = mockChunkOffsetRpc(100);
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  // Resolving at all is the property: the sibling offset test proves an out-of-range offset
+  // REFUSES, so only the accepting side can distinguish `at > total` from `at >= total`.
+  assert.equal(res.bytes.length, 100);
+});

@@ -68,6 +68,33 @@ const RPC_CHUNK_BYTES = 3 * 1024 * 1024;
 // NOTE: this bound is chosen by the SDK, not yet a normative protocol constant — see SPEC.md.
 const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 
+// Ceiling on the ciphertext carried by a SINGLE `dig.getContent` response, enforced before the
+// base64 decode allocates (#2517). The aggregate `MAX_RESOURCE_BYTES` ceiling above bounds the
+// reassembly buffer but says nothing about one response, so an untrusted node could declare a
+// 100-byte resource and answer with hundreds of megabytes.
+//
+// Be precise about WHAT this bounds. `rpcCall` already did `await res.json()`, so the hostile body
+// has been read and parsed: the base64 string (~1.33x the ciphertext) is resident before this check
+// runs. What the check prevents is the ADDITIONAL decoded `Uint8Array` — roughly the smaller half of
+// the cost. Bounding the response body itself belongs in `rpcCall` (a streaming/size-limited read)
+// and is deliberately deferred to its own change, since it has its own blast radius across every
+// `dig.*` method.
+//
+// The client ASKS for `RPC_CHUNK_BYTES`, so a conforming node never exceeds it and the honest
+// bound is 3 MiB. Doubling it is deliberate slack in the SAFE direction: refusing content a
+// legitimate node serves would break real reads, while 6 MiB is still ~85x below the aggregate
+// ceiling and small enough that repeated hostile responses cannot exhaust a tab. A node needing
+// more per response is misbehaving by its own protocol.
+const MAX_RESPONSE_CIPHERTEXT_BYTES = 2 * RPC_CHUNK_BYTES;
+
+// Ceiling on how many `dig.getContent` pages one resource may take (#2517). The strict
+// forward-progress check below already stops a node that repeats an offset forever; this bounds
+// the remaining spin — a node that advances by a single byte per page would otherwise make half a
+// billion round trips while satisfying "progress". At the requested 3 MiB per page a 512 MiB
+// resource needs 171 pages, so 4096 tolerates a node chunking 24x finer than asked before it is
+// treated as hostile: generous to slow-but-honest nodes, still a hard bound.
+const MAX_CONTENT_PAGES = 4096;
+
 /** Options to construct a DigClient. */
 export interface DigClientOptions {
   /**
@@ -475,7 +502,21 @@ export class DigClient {
     let buf: Uint8Array | null = null;
     let proof = "";
     let chunkLens: number[] | null = null;
-    for (;;) {
+    for (let page = 0; ; page++) {
+      if (page >= MAX_CONTENT_PAGES) {
+        // RESOURCE_TOO_LARGE, not RPC_MALFORMED_RESPONSE: every response here was well-formed. This
+        // is the client's own paging ceiling, and a consumer can act on the difference between "this
+        // node lies about its wire format" and "this node is uselessly slow".
+        throw new DigSdkError(
+          "RESOURCE_TOO_LARGE",
+          `The content network did not finish serving this resource within ${MAX_CONTENT_PAGES} chunks; refusing to keep paging.`,
+          {
+            rpcMethod: "dig.getContent",
+            pages: page,
+            maxPages: MAX_CONTENT_PAGES,
+          },
+        );
+      }
       const r = await this.rpcCall<GetContentResult>(rpc, "dig.getContent", {
         store_id: storeId,
         root,
@@ -528,15 +569,88 @@ export class DigClient {
       if (chunkLens === null && Array.isArray(r.chunk_lens)) {
         chunkLens = r.chunk_lens.map((n) => n >>> 0);
       }
-      const chunk = b64ToBytes(r.ciphertext ?? "");
-      const at = r.offset >>> 0;
+      const b64 = r.ciphertext ?? "";
+      // The ceiling below measures `b64.length`, so it is only a bound if `b64` IS a string.
+      // `b64ToBytes` reaches `atob`, which coerces its argument with ToString — so a JSON array
+      // `["<64 MiB of base64>"]` has `.length === 1` (passing the ceiling) yet stringifies to its
+      // element and decodes in full, and a value with no `.length` at all (a number, `true`, `{}`)
+      // makes the comparison `NaN > MAX`, which is FALSE — the guard fails OPEN. `JSON.parse`
+      // produces every one of those shapes from an untrusted node. Reject the type first so the
+      // guard's predicate is never narrower than what it claims to bound.
+      if (typeof b64 !== "string") {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          "The content network returned a non-string ciphertext.",
+          { rpcMethod: "dig.getContent", ciphertextType: typeof b64 },
+        );
+      }
+      // Bound the DECODE, not just the aggregate: base64 carries 3 bytes per 4 characters, so the
+      // encoded length tells us the allocation size before we make it (#2517).
+      const decodedBytes = Math.floor((b64.length * 3) / 4);
+      if (decodedBytes > MAX_RESPONSE_CIPHERTEXT_BYTES) {
+        throw new DigSdkError(
+          "RESOURCE_TOO_LARGE",
+          `The content network returned a ${decodedBytes}-byte chunk, above the ${MAX_RESPONSE_CIPHERTEXT_BYTES}-byte per-response ceiling; refusing to decode.`,
+          {
+            rpcMethod: "dig.getContent",
+            chunkLength: decodedBytes,
+            maxChunkLength: MAX_RESPONSE_CIPHERTEXT_BYTES,
+          },
+        );
+      }
+      // `atob` throws a raw `DOMException` on any string that is not valid base64 — an illegal
+      // character, or a length that is not a whole number of quanta. Ordinary truncation or
+      // corruption produces both, so this fires far more often than a crafted response, and an
+      // uncoded throw escaping `read()` breaks the SDK's contract that every failure it surfaces
+      // is a `DigSdkError` (#2518).
+      let chunk: Uint8Array;
+      try {
+        chunk = b64ToBytes(b64);
+      } catch (cause) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          "The content network returned a ciphertext that is not valid base64.",
+          { rpcMethod: "dig.getContent", chunkLength: b64.length },
+          { cause },
+        );
+      }
+      // Validate the WRITE offset before it reaches `TypedArray.set`, which throws a raw
+      // `RangeError` when `targetOffset > targetLength` — even for an empty source. A ~60-byte
+      // response declaring `offset: 5000` into a 100-byte resource would otherwise escape `read()`
+      // as an uncoded error, breaking the SDK's contract that every failure it surfaces is a
+      // `DigSdkError`. `>>> 0` cannot substitute for this: it silently wraps a huge or negative
+      // offset into a plausible one rather than refusing it.
+      const at = r.offset;
+      if (!Number.isInteger(at) || at < 0 || at > total) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          `The content network returned an out-of-range chunk offset (${String(r.offset)} into a ${total}-byte resource).`,
+          {
+            rpcMethod: "dig.getContent",
+            chunkOffset: r.offset,
+            totalLength: total,
+          },
+        );
+      }
       buf!.set(
         chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))),
         at,
       );
       if (r.inclusion_proof) proof = r.inclusion_proof;
       if (r.complete || r.next_offset == null) break;
-      offset = r.next_offset >>> 0;
+      // Require STRICT forward progress. A node repeating (or rewinding) an offset while holding
+      // `complete: false` would otherwise spin the client forever on a well-formed-looking reply
+      // (#2517) — the cheapest possible hang, and the §5.3 ladder makes an unauthenticated local
+      // node the default endpoint for a Node consumer.
+      const next = r.next_offset >>> 0;
+      if (next <= offset) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          `The content network returned a non-advancing next_offset (${next} after ${offset}); refusing to loop.`,
+          { rpcMethod: "dig.getContent", offset, nextOffset: next },
+        );
+      }
+      offset = next;
     }
     return { ciphertext: buf ?? new Uint8Array(0), proof, chunkLens };
   }
@@ -572,10 +686,23 @@ export class DigClient {
           httpStatus: res.status,
         },
       );
-    const json = (await res.json()) as {
+    // A 200 whose body is not JSON — `{{{`, an empty body, an HTML captive-portal page — makes
+    // `res.json()` throw a raw `SyntaxError`. This is the shared transport for EVERY `dig.*`
+    // method, so an uncoded throw here escapes the whole public surface (#2518).
+    let json: {
       result?: T;
       error?: { message?: string; code?: number };
     };
+    try {
+      json = (await res.json()) as typeof json;
+    } catch (cause) {
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        `dig RPC ${method} returned a body that is not valid JSON.`,
+        { rpcMethod: method, httpStatus: res.status },
+        { cause },
+      );
+    }
     if (json && json.error)
       throw new DigSdkError(
         "RPC_ERROR",

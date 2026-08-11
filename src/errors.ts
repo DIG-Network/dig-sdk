@@ -142,7 +142,10 @@ const DIG_SDK_ERROR_BRAND = "__dignetwork_dig_sdk_error__";
  * point context is stored on an error. A per-call-site redaction is one a future throw site forgets;
  * doing it here means every {@link DigSdkError} — whatever its code or fields — is safe to log.
  */
-function redactContext<T>(value: T): T {
+function redactContext<T>(
+  value: T,
+  seen: WeakMap<object, unknown> = new WeakMap(),
+): T {
   if (typeof value === "string") {
     // `redactUrnSalt` is pure and non-throwing by contract; this try/catch is a hard guarantee that
     // error CONSTRUCTION can never itself throw or (worse) construct another DigSdkError from
@@ -154,13 +157,25 @@ function redactContext<T>(value: T): T {
       return REDACTED_SALT as T;
     }
   }
-  if (Array.isArray(value)) return value.map(redactContext) as T;
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = redactContext(v);
+  if (value === null || typeof value !== "object") return value;
+  // A cyclic `context` would otherwise recurse until the stack blows — a RangeError thrown from
+  // error CONSTRUCTION, outside the string-only try/catch above and outside any `catch` the throw
+  // site could plausibly have (#2518). `context` is authored by SDK throw sites rather than by
+  // untrusted input, so this is hardening, not a live exploit path. Memoizing the redacted copy
+  // (rather than merely marking nodes visited) also PRESERVES the input's sharing/cycle structure,
+  // so a self-referential context survives redaction as a self-referential result.
+  const cached = seen.get(value);
+  if (cached !== undefined) return cached as T;
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    seen.set(value, out);
+    for (const v of value) out.push(redactContext(v, seen));
     return out as T;
   }
-  return value;
+  const out: Record<string, unknown> = {};
+  seen.set(value, out);
+  for (const [k, v] of Object.entries(value)) out[k] = redactContext(v, seen);
+  return out as T;
 }
 
 export class DigSdkError extends Error {

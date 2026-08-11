@@ -48,7 +48,14 @@ export function parseUrn(raw: string): ParsedUrn {
       "Not a valid dig URN (expected urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]).",
       {
         value: s,
-        expected: "urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]",
+        // The salt form is written LAST, with no trailing punctuation, because this string is
+        // itself swept by the salt redaction on its way into the error context: the sweep replaces
+        // everything after `salt=` up to a delimiter, so a bracketed `[?salt=<hex>]` would arrive at
+        // the consumer as `[?salt=<redacted>` with its closing bracket eaten. Trailing it keeps the
+        // help string intact WITHOUT narrowing the sweep (which must stay a superset of the URN
+        // grammar's capture, #2518). The full bracketed grammar is in the message above.
+        expected:
+          "urn:dig:chia:<store-id>[:<root>]/<path>, optionally ?salt=<hex>",
       },
     );
   }
@@ -63,11 +70,17 @@ export function parseUrn(raw: string): ParsedUrn {
 /** The placeholder a private-store salt is replaced with in any error/display string. */
 export const REDACTED_SALT = "<redacted>";
 
-// Fallback matcher for a `salt=<value>` occurrence in a string that is NOT a well-formed URN.
-// Matches the value up to the next query/fragment delimiter or whitespace, so a bare
-// `salt=<secret>` (no leading `?`/`&`, e.g. inside a malformed-URN error `value`) is still redacted.
-// Module-scoped so it compiles once (no `i` flag — the class is already case-covering where hex).
+// Matcher for ANY `salt=<value>` occurrence in a string. Matches the value up to the next
+// query/fragment delimiter or whitespace, so a bare `salt=<secret>` (no leading `?`/`&`, e.g.
+// inside a malformed-URN error `value`) is still redacted. Module-scoped so it compiles once
+// (no `i` flag — the class is already case-covering where hex).
 const SALT_PARAM_RE = /(salt=)[^&#\s]+/g;
+
+// Replace EVERY `salt=<value>` occurrence with the placeholder. Idempotent (re-running it over an
+// already-redacted string rewrites the placeholder to itself), so it is safe as a final pass.
+function stripSaltParams(s: string): string {
+  return s.replace(SALT_PARAM_RE, `$1${REDACTED_SALT}`);
+}
 
 /**
  * Return `raw` with any private-store `salt=<secret>` replaced by {@link REDACTED_SALT}, so a URN
@@ -78,8 +91,17 @@ const SALT_PARAM_RE = /(salt=)[^&#\s]+/g;
  * (so it is not a divergent parser) but NEVER calls `parseUrn` — calling the throwing parser here
  * would construct a `DigSdkError`, whose own context redaction would re-enter this function and
  * recurse without bound (a fatal, uncatchable crash). For a well-formed URN it rebuilds the string
- * with the salt group redacted; otherwise it strips any `salt=<value>` occurrence from the raw
- * string. It must never throw and never construct a `DigSdkError`.
+ * with the salt group redacted; a final {@link stripSaltParams} pass then catches every `salt=`
+ * the URN grammar does NOT capture.
+ *
+ * That final pass is load-bearing, not belt-and-braces (#2518): `URN_RE`'s optional `?salt=` group
+ * only captures a salt in FINAL position, and its resource-key group is greedy enough to absorb a
+ * query tail — so `…?salt=<secret>&x=1`, `…?salt=<secret>#frag`, and the rooted form with a
+ * trailing param all MATCH with the salt group ABSENT. Returning such a string untouched (because
+ * "the URN parser found no salt") published the secret into any serialized error. Redaction must
+ * therefore be a superset of what the parser captures, never equal to it.
+ *
+ * It must never throw and never construct a `DigSdkError`.
  */
 export function redactUrnSalt(raw: string): string {
   const s = String(raw ?? "");
@@ -87,19 +109,20 @@ export function redactUrnSalt(raw: string): string {
   // (also skips the regexes for the common case: rpcMethod, plain paths, non-URN values).
   if (!s.includes("salt=")) return s;
   const m = URN_RE.exec(s);
-  if (m) {
-    // A well-formed URN. m[4] is the salt group; absent → nothing to redact.
-    if (!m[4]) return s;
+  if (m?.[4]) {
+    // A well-formed URN whose salt the parser DID capture: rebuild it canonically, then sweep, so
+    // a second `salt=` hidden inside the resource key cannot ride along.
     const storeId = m[1]!.toLowerCase();
     const root = m[2] ? m[2].toLowerCase() : null;
     const resourceKey = m[3]!;
     const base = root
       ? `urn:dig:chia:${storeId}:${root}/${resourceKey}`
       : `urn:dig:chia:${storeId}/${resourceKey}`;
-    return `${base}?salt=${REDACTED_SALT}`;
+    return stripSaltParams(`${base}?salt=${REDACTED_SALT}`);
   }
-  // Not a well-formed URN — strip any `salt=<value>` occurrence from the raw string.
-  return s.replace(SALT_PARAM_RE, `$1${REDACTED_SALT}`);
+  // Either not a URN at all, or a URN whose salt the grammar did not capture (non-final position).
+  // Both are handled by stripping every `salt=<value>` occurrence from the raw string.
+  return stripSaltParams(s);
 }
 
 /** True iff `raw` is a syntactically valid DIG URN. Never throws. */
