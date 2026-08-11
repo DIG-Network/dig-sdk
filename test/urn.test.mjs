@@ -95,14 +95,20 @@ function renderError(err) {
 const NON_FINAL_SALT_URNS = [
   ["trailing & param", `urn:dig:chia:${STORE}/a.txt?salt=${NF_SALT}&x=1`],
   ["trailing #fragment", `urn:dig:chia:${STORE}/a.txt?salt=${NF_SALT}#frag`],
-  ["rooted + trailing param", `urn:dig:chia:${STORE}:${ROOT}/a.txt?salt=${NF_SALT}&v=2`],
+  [
+    "rooted + trailing param",
+    `urn:dig:chia:${STORE}:${ROOT}/a.txt?salt=${NF_SALT}&v=2`,
+  ],
 ];
 
 for (const [label, urn] of NON_FINAL_SALT_URNS) {
   test(`a non-final salt (${label}) never reaches a rendered error (#2518)`, () => {
     const err = new DigSdkError("INVALID_ARGUMENT", "bad urn", { value: urn });
     const rendered = renderError(err);
-    assert.ok(!rendered.includes(NF_SALT), `salt leaked into a rendered error: ${rendered}`);
+    assert.ok(
+      !rendered.includes(NF_SALT),
+      `salt leaked into a rendered error: ${rendered}`,
+    );
     assert.ok(rendered.includes("<redacted>"));
   });
 }

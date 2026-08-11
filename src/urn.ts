@@ -48,7 +48,14 @@ export function parseUrn(raw: string): ParsedUrn {
       "Not a valid dig URN (expected urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]).",
       {
         value: s,
-        expected: "urn:dig:chia:<store-id>[:<root>]/<path>[?salt=<hex>]",
+        // The salt form is written LAST, with no trailing punctuation, because this string is
+        // itself swept by the salt redaction on its way into the error context: the sweep replaces
+        // everything after `salt=` up to a delimiter, so a bracketed `[?salt=<hex>]` would arrive at
+        // the consumer as `[?salt=<redacted>` with its closing bracket eaten. Trailing it keeps the
+        // help string intact WITHOUT narrowing the sweep (which must stay a superset of the URN
+        // grammar's capture, #2518). The full bracketed grammar is in the message above.
+        expected:
+          "urn:dig:chia:<store-id>[:<root>]/<path>, optionally ?salt=<hex>",
       },
     );
   }

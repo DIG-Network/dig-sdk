@@ -71,8 +71,14 @@ const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 // Ceiling on the ciphertext carried by a SINGLE `dig.getContent` response, enforced before the
 // base64 decode allocates (#2517). The aggregate `MAX_RESOURCE_BYTES` ceiling above bounds the
 // reassembly buffer but says nothing about one response, so an untrusted node could declare a
-// 100-byte resource and answer with hundreds of megabytes — an O(response) allocation on every
-// request, which is a browser tab's memory rather than a disk quota.
+// 100-byte resource and answer with hundreds of megabytes.
+//
+// Be precise about WHAT this bounds. `rpcCall` already did `await res.json()`, so the hostile body
+// has been read and parsed: the base64 string (~1.33x the ciphertext) is resident before this check
+// runs. What the check prevents is the ADDITIONAL decoded `Uint8Array` — roughly the smaller half of
+// the cost. Bounding the response body itself belongs in `rpcCall` (a streaming/size-limited read)
+// and is deliberately deferred to its own change, since it has its own blast radius across every
+// `dig.*` method.
 //
 // The client ASKS for `RPC_CHUNK_BYTES`, so a conforming node never exceeds it and the honest
 // bound is 3 MiB. Doubling it is deliberate slack in the SAFE direction: refusing content a
@@ -498,10 +504,17 @@ export class DigClient {
     let chunkLens: number[] | null = null;
     for (let page = 0; ; page++) {
       if (page >= MAX_CONTENT_PAGES) {
+        // RESOURCE_TOO_LARGE, not RPC_MALFORMED_RESPONSE: every response here was well-formed. This
+        // is the client's own paging ceiling, and a consumer can act on the difference between "this
+        // node lies about its wire format" and "this node is uselessly slow".
         throw new DigSdkError(
-          "RPC_MALFORMED_RESPONSE",
+          "RESOURCE_TOO_LARGE",
           `The content network did not finish serving this resource within ${MAX_CONTENT_PAGES} chunks; refusing to keep paging.`,
-          { rpcMethod: "dig.getContent", pages: page, maxPages: MAX_CONTENT_PAGES },
+          {
+            rpcMethod: "dig.getContent",
+            pages: page,
+            maxPages: MAX_CONTENT_PAGES,
+          },
         );
       }
       const r = await this.rpcCall<GetContentResult>(rpc, "dig.getContent", {
@@ -557,6 +570,20 @@ export class DigClient {
         chunkLens = r.chunk_lens.map((n) => n >>> 0);
       }
       const b64 = r.ciphertext ?? "";
+      // The ceiling below measures `b64.length`, so it is only a bound if `b64` IS a string.
+      // `b64ToBytes` reaches `atob`, which coerces its argument with ToString — so a JSON array
+      // `["<64 MiB of base64>"]` has `.length === 1` (passing the ceiling) yet stringifies to its
+      // element and decodes in full, and a value with no `.length` at all (a number, `true`, `{}`)
+      // makes the comparison `NaN > MAX`, which is FALSE — the guard fails OPEN. `JSON.parse`
+      // produces every one of those shapes from an untrusted node. Reject the type first so the
+      // guard's predicate is never narrower than what it claims to bound.
+      if (typeof b64 !== "string") {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          "The content network returned a non-string ciphertext.",
+          { rpcMethod: "dig.getContent", ciphertextType: typeof b64 },
+        );
+      }
       // Bound the DECODE, not just the aggregate: base64 carries 3 bytes per 4 characters, so the
       // encoded length tells us the allocation size before we make it (#2517).
       const decodedBytes = Math.floor((b64.length * 3) / 4);
@@ -572,7 +599,24 @@ export class DigClient {
         );
       }
       const chunk = b64ToBytes(b64);
-      const at = r.offset >>> 0;
+      // Validate the WRITE offset before it reaches `TypedArray.set`, which throws a raw
+      // `RangeError` when `targetOffset > targetLength` — even for an empty source. A ~60-byte
+      // response declaring `offset: 5000` into a 100-byte resource would otherwise escape `read()`
+      // as an uncoded error, breaking the SDK's contract that every failure it surfaces is a
+      // `DigSdkError`. `>>> 0` cannot substitute for this: it silently wraps a huge or negative
+      // offset into a plausible one rather than refusing it.
+      const at = r.offset;
+      if (!Number.isInteger(at) || at < 0 || at > total) {
+        throw new DigSdkError(
+          "RPC_MALFORMED_RESPONSE",
+          `The content network returned an out-of-range chunk offset (${String(r.offset)} into a ${total}-byte resource).`,
+          {
+            rpcMethod: "dig.getContent",
+            chunkOffset: r.offset,
+            totalLength: total,
+          },
+        );
+      }
       buf!.set(
         chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))),
         at,

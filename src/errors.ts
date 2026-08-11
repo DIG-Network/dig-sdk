@@ -142,7 +142,10 @@ const DIG_SDK_ERROR_BRAND = "__dignetwork_dig_sdk_error__";
  * point context is stored on an error. A per-call-site redaction is one a future throw site forgets;
  * doing it here means every {@link DigSdkError} — whatever its code or fields — is safe to log.
  */
-function redactContext<T>(value: T, seen: WeakMap<object, unknown> = new WeakMap()): T {
+function redactContext<T>(
+  value: T,
+  seen: WeakMap<object, unknown> = new WeakMap(),
+): T {
   if (typeof value === "string") {
     // `redactUrnSalt` is pure and non-throwing by contract; this try/catch is a hard guarantee that
     // error CONSTRUCTION can never itself throw or (worse) construct another DigSdkError from

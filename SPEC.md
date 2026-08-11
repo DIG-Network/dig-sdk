@@ -252,6 +252,15 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
   `index.html`.
 - `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
 
+**Salt redaction (normative).** The salt is the out-of-band secret that makes a store private, so it
+MUST NOT be republished by the SDK's own diagnostics. Every `DigSdkError` redacts its context when
+the error is constructed: any `salt=<value>` occurring in a context string — in a well-formed URN, in
+a malformed one, or in free text — is replaced with the literal `<redacted>` before it is stored.
+Consequently no serialized `DigSdkError` (its `context`, its `toJSON()` output, or anything logged
+from them) contains a salt value. Redaction MUST be a strict superset of what the URN grammar
+captures: a salt in a non-final position (`…?salt=<hex>&x=1`, `…?salt=<hex>#frag`) is not captured by
+the URN pattern and MUST still be redacted.
+
 The **canonical, root-INDEPENDENT** form is `urn:dig:chia:<store_id>/<resource_key>` — the form
 whose bytes seed key derivation. `reconstructUrn(storeId, resourceKey)` produces it;
 `reconstructUrnWithRoot(...)` produces the root-pinned DISPLAY form `urn:dig:chia:<store_id>:<root>/
@@ -296,6 +305,21 @@ is just opaque bytes that fail to decrypt.
   allocation ahead of any verification. A declared length above the ceiling — or one the host cannot
   allocate — is refused with `RESOURCE_TOO_LARGE` and no allocation is attempted. NOTE: 512 MiB is an
   SDK-chosen client-side bound, not (yet) a normative wire constant negotiated with the RPC.
+- **Per-response ciphertext ceiling:** the ciphertext carried by ONE `dig.getContent` response is
+  bounded at **6 MiB** (`2 * 3 MiB`, twice the requested chunk length). The decoded size is computed
+  from the base64 length (3 bytes per 4 characters) and checked BEFORE the decode allocates, so a
+  response above the ceiling is refused with `RESOURCE_TOO_LARGE` and never decoded. The aggregate
+  `total_length` ceiling above does not cover this case: a response may declare a tiny resource and
+  still carry an arbitrarily large body.
+- **Page ceiling:** one resource is reassembled from at most **4096** `dig.getContent` responses. A
+  node that has not completed the resource by then is refused with `RESOURCE_TOO_LARGE` — each
+  response is well-formed, so this is a client resource ceiling rather than a wire-format fault.
+- **Strict forward progress:** while `complete` is false, each returned `next_offset` MUST be
+  strictly greater than the offset just requested. A `next_offset` that repeats or rewinds the
+  current offset is refused with `RPC_MALFORMED_RESPONSE`; the client MUST NOT loop on it.
+- NOTE: like the 512 MiB bound, the 6 MiB per-response ceiling, the 4096-page ceiling and the
+  refusal codes attached to them are SDK-chosen client-side refusal policy. They are not normative
+  wire constants negotiated with the RPC, and a second implementation is not required to match them.
 
 **`dig.getCollection`** — read a collection's public, owner-independent facts.
 
