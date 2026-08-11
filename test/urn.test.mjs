@@ -297,3 +297,65 @@ test("widening the salt scanner changes only salts, and moves none that 0.6.3 co
     `no moved-salt example crosses a '?' boundary: ${movedExamples.join(", ")}`,
   );
 });
+
+// ---------------------------------------------------------------------------------------------
+// The module's own boundary against the #2719 coercion class.
+//
+// `parseUrn` is what a dapp runs on untrusted input, and it began with `String(raw ?? "")` — the
+// very coercion this release exists to close everywhere else. `String()` on a deeply nested array
+// reaches `Array.prototype.join`, which recurses once per level and throws a raw `RangeError`. That
+// escapes as an UNCODED error from a public export, in a release whose SPEC states every failure the
+// SDK surfaces is a coded `DigSdkError`.
+//
+// The fixture is nested 60_000 deep because that is the depth measured to blow the stack; a shallow
+// nested array coerces fine and would assert nothing. It is built iteratively — building it
+// recursively would blow the stack in the TEST rather than in the code under test.
+function deeplyNestedArray(depth = 60_000) {
+  let a = [];
+  for (let i = 0; i < depth; i++) a = [a];
+  return a;
+}
+
+test("parseUrn refuses a non-scalar argument with a coded error, not a RangeError (#2719)", () => {
+  for (const hostile of [deeplyNestedArray(), {}, [], () => {}]) {
+    let thrown;
+    try {
+      parseUrn(hostile);
+    } catch (e) {
+      thrown = e;
+    }
+    assert.ok(thrown instanceof DigSdkError, `uncoded throw: ${thrown}`);
+    assert.equal(thrown.code, "INVALID_ARGUMENT");
+    // The hostile value must not be echoed into the context — that hands it straight to the
+    // redaction walk this refusal exists to keep it away from.
+    assert.equal(thrown.context?.value, undefined);
+  }
+});
+
+test("parseUrn still accepts the scalars it always coerced (#2719)", () => {
+  // The refusal must be narrow: only shapes that can RECURSE. Scalars coerce in constant time, and
+  // narrowing to `typeof === "string"` would be an unrequested behaviour change.
+  assert.throws(() => parseUrn(null), DigSdkError);
+  assert.throws(() => parseUrn(undefined), DigSdkError);
+  assert.throws(() => parseUrn(42), DigSdkError);
+  assert.equal(parseUrn(` urn:dig:chia:${STORE}/a.txt `).resourceKey, "a.txt");
+});
+
+test("isUrn returns false for a non-scalar rather than propagating (#2719)", () => {
+  assert.equal(isUrn(deeplyNestedArray()), false);
+  assert.equal(isUrn({}), false);
+});
+
+test("redactUrnSalt is total: a non-scalar neither throws nor constructs an error (#2719)", async () => {
+  const { redactUrnSalt, REDACTED_SALT } = await import("../dist/index.js");
+  // It must NOT construct a DigSdkError either — the error constructor redacts its own context
+  // through this function, so throwing one here would re-enter and recurse without bound.
+  assert.equal(typeof redactUrnSalt(deeplyNestedArray()), "string");
+  assert.equal(redactUrnSalt({}), "[object]");
+  assert.equal(redactUrnSalt(deeplyNestedArray()), "[array]");
+  assert.equal(redactUrnSalt(undefined), "");
+  assert.equal(redactUrnSalt(null), "");
+  // The scalar and string behaviour it already had is unchanged.
+  assert.equal(redactUrnSalt(`?salt=deadbeef`), `?salt=${REDACTED_SALT}`);
+  assert.equal(redactUrnSalt("plain"), "plain");
+});

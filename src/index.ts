@@ -86,6 +86,10 @@ export {
   isUrn,
   reconstructUrn,
   reconstructUrnWithRoot,
+  // Exported so a consumer can scrub a URN before logging it, and so the "never throws" contract on
+  // the redactor is testable at the package boundary rather than only through error construction.
+  redactUrnSalt,
+  REDACTED_SALT,
   type ParsedUrn,
 } from "./urn.js";
 

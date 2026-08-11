@@ -277,6 +277,17 @@ appended after a second `?` (`report?year=2024.csv?salt=<hex>`) is the grammar's
 recognized. When more than one `?` carries a boundary `salt=`, the FIRST such `?` wins — it strips the
 most, so no later `salt=` can survive inside `<resource_key>`.
 
+When two boundary occurrences carry DIFFERENT hex values, the FIRST is the salt: `k??salt=aa11&salt=ff00`
+carries `aa11`, because the `?` beginning the chosen query's second segment is a boundary and precedes
+the `&`.
+
+`parseUrn` MUST reject a non-scalar argument (object, array, function) with a coded
+`INVALID_ARGUMENT` error BEFORE coercing it to a string, and MUST NOT place the value in the error
+context. Coercing a deeply nested array recurses and throws an uncoded `RangeError`, which would
+escape the "every failure is a coded `DigSdkError`" guarantee at the one surface a consumer runs on
+untrusted input. `isUrn` MUST return `false` for such an argument, and `redactUrnSalt` MUST remain
+total for it without constructing a `DigSdkError`.
+
 A parser MUST NOT recognize the query with a broader test than it recognizes a _qualifying_ `salt=`.
 Splitting on an unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a
 different retrieval key for content that is already published on chain — unreadable, and unmigratable.

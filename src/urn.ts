@@ -39,6 +39,7 @@
 //   • ?salt=<hex>  — OPTIONAL out-of-band secret salt for a PRIVATE store.
 
 import { DigSdkError } from "./errors.js";
+import { isNonScalar, nonScalarTypeName } from "./coercion.js";
 
 /** The parts of a parsed DIG URN. `root`/`salt` are null when absent. */
 export interface ParsedUrn {
@@ -163,6 +164,21 @@ function splitQuery(s: string): { base: string; salt: string | null } {
  * // → { storeId: "abab…", root: null, resourceKey: "index.html", salt: null }
  */
 export function parseUrn(raw: string): ParsedUrn {
+  // REFUSE before COERCING. `String(raw)` on a deeply nested array recurses through
+  // `Array.prototype.join` and throws a raw, UNCODED `RangeError` out of a public export — the
+  // #2719 class this release closes on the RPC read path, which was still open here. `parseUrn` and
+  // `isUrn` are precisely what a dapp runs on untrusted input, so this is the boundary that has to
+  // hold for the SPEC's "every failure is a coded DigSdkError" to be true.
+  //
+  // The value itself is NOT put in the context: that would hand it straight to the redaction walk
+  // this refusal exists to keep it away from. Only its type name, computed without coercion.
+  if (isNonScalar(raw)) {
+    throw new DigSdkError(
+      "INVALID_ARGUMENT",
+      "A dig URN must be a string; a non-scalar value cannot be read as one.",
+      { valueType: nonScalarTypeName(raw) },
+    );
+  }
   const s = String(raw ?? "").trim();
   const { base, salt } = splitQuery(s);
   const m = URN_PATH_RE.exec(base);
@@ -223,8 +239,15 @@ function stripSaltParams(s: string): string {
  * what makes the guarantee independent of the grammar, so it must never be narrowed to match it.
  *
  * It must never throw and never construct a `DigSdkError`.
+ *
+ * "Never throws" once relied on `String(raw ?? "")`, which is NOT total: on a deeply nested array
+ * it recurses through `Array.prototype.join` and throws (#2719). A non-scalar is therefore reported
+ * by its TYPE NAME, computed without touching the value — the only answer that is simultaneously
+ * total, leak-free, and reachable without constructing a `DigSdkError` (which would re-enter this
+ * function through the error constructor's own redaction and recurse without bound).
  */
 export function redactUrnSalt(raw: string): string {
+  if (isNonScalar(raw)) return `[${nonScalarTypeName(raw)}]`;
   const s = String(raw ?? "");
   // A string with no `salt=` substring cannot carry a private-store salt — return it untouched
   // (also skips the regex for the common case: rpcMethod, plain paths, non-URN values).

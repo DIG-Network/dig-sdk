@@ -29,6 +29,7 @@ import { loadDigClientWasm } from "./loader.js";
 import type { DigClientWasm } from "./wasm.js";
 import { parseUrn } from "./urn.js";
 import { b64ToBytes } from "./hex.js";
+import { isNonScalar, nonScalarTypeName } from "./coercion.js";
 import type {
   CollectionItemsPage,
   CollectionMeta,
@@ -129,14 +130,14 @@ const MAX_CONTENT_PAGES = 4096;
  * hands it straight back to the redaction walk this exists to keep it away from.
  */
 function assertCoercible(v: unknown, field: string, method: string): void {
-  if (v !== null && (typeof v === "object" || typeof v === "function")) {
+  if (isNonScalar(v)) {
     throw new DigSdkError(
       "RPC_MALFORMED_RESPONSE",
       `The content network returned a non-scalar ${field}, which cannot be read as a value.`,
       {
         rpcMethod: method,
         field,
-        valueType: Array.isArray(v) ? "array" : typeof v,
+        valueType: nonScalarTypeName(v),
       },
     );
   }
