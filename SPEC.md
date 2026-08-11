@@ -405,10 +405,23 @@ is just opaque bytes that fail to decrypt.
   complete. This is the outermost of the three size bounds and the only one that limits what is ever
   resident: the ceilings above run after parsing, so a node may declare `total_length: 100` and
   answer with an arbitrarily large body. 16 MiB is twice the ~8 MiB a base64-encoded 6 MiB
-  per-response ciphertext ceiling implies, so every legal response fits. When an injected `fetch`
-  returns a non-streaming `Response` shim (no `body` readable stream), the ceiling is enforced
-  against the declared `content-length` header instead; an absent or unparseable `content-length`
-  bypasses the ceiling for that response.
+  per-response ciphertext ceiling implies, so every legal response fits.
+
+  The ceiling applies to every body the SDK can MEASURE, not only to a WHATWG stream. `fetch` is an
+  injectable option, so `res.body` may be a WHATWG `ReadableStream` (a real `fetch`; read via
+  `getReader()`) or a Node `Readable` (`node-fetch` v2, `cross-fetch`; read via `for await`) — both
+  are read under the same budget, refused with the same `RESOURCE_TOO_LARGE`, and released early. A
+  chunk whose byte length cannot be determined is refused with `RPC_MALFORMED_RESPONSE` rather than
+  accepted, because a chunk that misreports its size would otherwise disable the ceiling for the
+  remainder of the body.
+
+  **The one documented residue:** an injected `fetch` returning a body that is neither a stream nor
+  async-iterable (a fully buffered `Response` shim) cannot be measured before it is parsed. For that
+  shape the ceiling is enforced against the declared `content-length` header instead, and an absent
+  or unparseable `content-length` bypasses it for that response. This is a property of the injected
+  transport, not of the protocol: every mainstream `fetch` implementation returns one of the two
+  measurable shapes above.
+
 - **Response-shape validation:** when present, `ciphertext` MUST be a string (an absent or `null`
   `ciphertext` is read as an empty chunk). A non-string (an array, a number, a
   boolean, an object) is refused with `RPC_MALFORMED_RESPONSE` and never decoded — base64 decoding

@@ -1206,6 +1206,51 @@ test("refuses an unmeasurable stream chunk rather than failing open (#2517)", as
   const dig = new DigClient({ fetch: fetchImpl });
   await assert.rejects(
     () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
-    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+    // Discriminate on the MESSAGE, not the code. `RPC_MALFORMED_RESPONSE` is also what a plain
+    // JSON-parse failure raises, so an implementation that let the chunk through and then failed to
+    // parse it would satisfy a code-only assertion while the ceiling was off.
+    (e) =>
+      e instanceof DigSdkError &&
+      e.code === "RPC_MALFORMED_RESPONSE" &&
+      /cannot be bounded/.test(e.message),
   );
+});
+
+test("a chunk that FORGES Uint8Array's prototype cannot disable the ceiling (#2517)", async () => {
+  // `instanceof Uint8Array` is a prototype-chain check, so `Object.create(Uint8Array.prototype)`
+  // with a poisoned `byteLength` satisfies it. A size guard that trusts such a chunk adds NaN (or a
+  // negative number) to its counter, and `NaN > MAX` is false — the ceiling is then off for the
+  // whole rest of the body. The poisoned chunk goes FIRST, followed by 64 MiB of real buffers.
+  //
+  // Asserting on the error code alone would NOT catch a bypass here: the body that gets through is
+  // not valid JSON, so a bypass also throws `RPC_MALFORMED_RESPONSE`. The discriminating assertion
+  // is how many bytes were pulled.
+  for (const poison of [NaN, -1e9, "1"]) {
+    const meter = { produced: 0 };
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        async *[Symbol.asyncIterator]() {
+          const fake = Object.create(Uint8Array.prototype);
+          Object.defineProperty(fake, "byteLength", { get: () => poison });
+          yield fake;
+          while (meter.produced < 64 * 1024 * 1024) {
+            meter.produced += 1 << 20;
+            yield Buffer.alloc(1 << 20, 0x20);
+          }
+        },
+      },
+      headers: { get: () => null },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    });
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(() =>
+      dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    );
+    assert.ok(
+      meter.produced < 32 * 1024 * 1024,
+      `byteLength=${poison} disabled the ceiling: pulled ${meter.produced} bytes`,
+    );
+  }
 });

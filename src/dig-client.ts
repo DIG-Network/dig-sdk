@@ -864,13 +864,26 @@ async function readBudgeted(
   return concatBytes(chunks, read);
 }
 
-/** A stream chunk as bytes — `Buffer`, any typed-array view, or a string — else `null`. */
+/**
+ * A stream chunk as bytes — any typed-array view (`Uint8Array`, `Buffer`, `DataView`) or a string —
+ * else `null`.
+ *
+ * `ArrayBuffer.isView` FIRST, and deliberately NO `instanceof` anywhere. `instanceof` is a
+ * prototype-chain check, not an internal-slot check, so `Object.create(Uint8Array.prototype)`
+ * carrying a poisoned `byteLength` getter satisfies it — and a chunk whose size lies by returning
+ * `NaN` or a negative number walks the byte counter off the rails and disables the ceiling for the
+ * REST of the body. `isView` interrogates the internal slot and cannot be forged.
+ *
+ * The invariant the caller depends on: this ALWAYS returns a freshly constructed view, never the
+ * caller's object, so the `byteLength` the budget accumulates is one this function computed and a
+ * hostile chunk cannot influence. Returning `value` directly for the common case would be a
+ * micro-optimisation that reopens exactly this hole.
+ */
 function asBytes(value: unknown): Uint8Array | null {
-  if (value instanceof Uint8Array) return value;
-  if (typeof value === "string") return new TextEncoder().encode(value);
   if (ArrayBuffer.isView(value)) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
+  if (typeof value === "string") return new TextEncoder().encode(value);
   return null;
 }
 
