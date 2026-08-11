@@ -602,6 +602,38 @@ test("accepts a single response at the per-response ceiling (#2517)", async () =
   );
 });
 
+test("refuses a non-streaming response whose content-length exceeds the ceiling (#2517)", async () => {
+  // A non-streaming shim (no `body`) that declares an oversized content-length. The streaming
+  // branch never runs; the ceiling must fall back to the declared header value.
+  const root = "cd".repeat(32);
+  const oversizedLength = 17 * 1024 * 1024; // 17 MiB > 16 MiB ceiling
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      headers: { get: (name) => (name.toLowerCase() === "content-length" ? String(oversizedLength) : null) },
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 100,
+            offset: 0,
+            ciphertext: "A",
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+});
+
 // A node that never completes. `advance` bytes of forward progress per page: 0 exercises the
 // strict-progress guard, 1 exercises the max-page cap (progress is real but uselessly slow).
 function mockNeverCompletingRpc(advance) {
