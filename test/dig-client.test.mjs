@@ -1716,13 +1716,40 @@ test("an oversized chunk is refused BEFORE it is copied (#2517)", async () => {
       },
       json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
     });
+    // Count bytes ACTUALLY ALLOCATED by instrumenting the two allocation sites, rather than
+    // sampling `memoryUsage()` — a heap sample depends on GC timing, and this must not be able to
+    // pass for the wrong reason on a busy CI box.
+    const realSlice = Uint8Array.prototype.slice;
+    const realEncode = TextEncoder.prototype.encode;
+    let allocated = 0;
+    Uint8Array.prototype.slice = function (...args) {
+      const out = realSlice.apply(this, args);
+      allocated += out.byteLength;
+      return out;
+    };
+    TextEncoder.prototype.encode = function (...args) {
+      const out = realEncode.apply(this, args);
+      allocated += out.byteLength;
+      return out;
+    };
     const dig = new DigClient({ fetch: fetchImpl });
-    await assert.rejects(
-      () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
-      (e) => {
-        atThrow = process.memoryUsage().arrayBuffers;
-        return e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE";
-      },
+    try {
+      await assert.rejects(
+        () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+        (e) => {
+          atThrow = process.memoryUsage().arrayBuffers;
+          return e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE";
+        },
+      );
+    } finally {
+      Uint8Array.prototype.slice = realSlice;
+      TextEncoder.prototype.encode = realEncode;
+    }
+    // The load-bearing assertion. `RESOURCE_TOO_LARGE` is raised either way, so the error code
+    // cannot distinguish a pre-copy refusal from a post-copy one; only the allocation can.
+    assert.ok(
+      allocated < CHUNK,
+      `${kind}: ${Math.round(allocated / 1048576)} MiB was allocated before the refusal`,
     );
     assert.ok(
       atThrow < CHUNK * 1.5,
