@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.6.3] - 2026-08-11
+
+### Bug Fixes
+- **sdk:** Bound RPC responses and derive salt redaction from the URN parser (#13)
+
 ## [0.6.2] - 2026-08-09
 
 ### Bug Fixes
