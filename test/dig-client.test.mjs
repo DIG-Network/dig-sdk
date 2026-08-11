@@ -941,8 +941,8 @@ test("ACCEPTS a chunk offset exactly equal to total_length (#2517)", async () =>
   // is what stops the guard drifting to `>=`; the sibling test above pins the refusing side.
   const { fetchImpl } = mockChunkOffsetRpc(100);
   const dig = new DigClient({ fetch: fetchImpl });
-  await assert.rejects(
-    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
-    (e) => e instanceof DigSdkError && e.code !== "RPC_MALFORMED_RESPONSE",
-  );
+  const res = await dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root });
+  // Resolving at all is the property: the sibling offset test proves an out-of-range offset
+  // REFUSES, so only the accepting side can distinguish `at > total` from `at >= total`.
+  assert.equal(res.bytes.length, 100);
 });
