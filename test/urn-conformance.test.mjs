@@ -31,22 +31,31 @@ test("the conformance table is well-formed and non-trivial", () => {
   // The table must actually exercise both verdicts, or the loop below proves only one half.
   assert.ok(table.cases.some((c) => c.expect.invalid === true));
   assert.ok(table.cases.some((c) => c.expect.invalid !== true));
-  // …and it must cover the two cases this contract exists for.
-  assert.ok(
-    table.cases.some(
-      (c) =>
-        c.expect.salt &&
-        c.urn.includes("salt=") &&
-        c.urn.indexOf("salt=") <
-          c.urn.length - "salt=".length - c.expect.salt.length,
-    ),
-    "no non-final-position salt case",
-  );
-  assert.ok(
-    table.cases.some((c) => c.expect.resourceKey?.includes("#")),
-    "no '#'-in-key case",
-  );
 });
+
+// The table is only as good as its coverage of the edges where implementations actually differ: a
+// sibling could pass every row of a table that omitted these and still derive a different key. Each
+// predicate names the divergence it guards, so a future trim of the table fails HERE with the reason
+// rather than silently reducing what conformance means.
+const REQUIRED_COVERAGE = {
+  "a salt in non-final position": (c) =>
+    c.expect.salt && /salt=[0-9a-f]+&/.test(c.urn),
+  "a resource key containing '#'": (c) => c.expect.resourceKey?.includes("#"),
+  "a resource key containing '?' with NO salt (the no-regression case)": (c) =>
+    c.expect.resourceKey?.includes("?") && c.expect.salt === null,
+  "a percent-encoded salt value (not decoded)": (c) => c.urn.includes("salt=%"),
+  "an empty salt value": (c) => /salt=(&|$)/.test(c.urn),
+  "a duplicated salt parameter": (c) =>
+    (c.urn.match(/salt=/g) ?? []).length > 1,
+  "an uppercase parameter name": (c) => c.urn.includes("SALT="),
+  "'salt=' inside another parameter's value": (c) => /=salt=/.test(c.urn),
+};
+
+for (const [what, matches] of Object.entries(REQUIRED_COVERAGE)) {
+  test(`the conformance table covers ${what}`, () => {
+    assert.ok(table.cases.some(matches), `no case covers ${what}`);
+  });
+}
 
 for (const c of table.cases) {
   test(`conformance: ${c.name}`, () => {
@@ -82,4 +91,17 @@ test("a non-final-position salt never reaches the resource key (#2518)", () => {
       );
     }
   }
+});
+
+test("a resource key containing '?' still parses verbatim when no salt is present (#2518 regression)", () => {
+  // The named regression: 0.6.3 absorbed a `?` into the resource key, and SPEC.md imposes no charset
+  // restriction, so `report?year=2024.csv` is a real key with a real retrieval key and a working
+  // public read. An unconditional query split derives a DIFFERENT key and makes already-published
+  // content unreadable — unmigratable, because the content is already on chain. Pinned here as its
+  // own named test, not only as a table row, because this is the property that keeps 0.6.4 additive.
+  const parsed = parseUrn(
+    `urn:dig:chia:${"ab".repeat(32)}/report?year=2024.csv`,
+  );
+  assert.equal(parsed.resourceKey, "report?year=2024.csv");
+  assert.equal(parsed.salt, null);
 });

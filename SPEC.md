@@ -252,19 +252,34 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
   `index.html`.
 - `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
 
-**Query handling (normative).** Everything from the FIRST `?` is the query and is NOT part of
-`<resource_key>`. Within it, `salt` is read as an ordinary query PARAMETER — in ANY position
-(`?salt=<hex>`, `?salt=<hex>&x=1`, `?x=1&salt=<hex>`) — and the remainder of the query is discarded,
-because no other parameter addresses a resource. A `salt` value that is not hex is not a salt.
+**Query handling (normative).** A `<resource_key>` MAY contain any character, `?` and `#` included, so
+a trailing segment is NOT assumed to be a query. A parser MUST split a query off ONLY when the segment
+after the first `?` contains the literal `salt=`; otherwise the whole remainder is part of
+`<resource_key>` and MUST be preserved verbatim. `report?year=2024.csv` and `notes#1.md` are valid,
+working keys, and a parser that strips either derives a different retrieval key and cannot read
+already-published content.
 
-A parser MUST NOT read `salt` in final position only. Doing so left the secret inside
-`<resource_key>`, which is BOTH a key-derivation input and a field copied onto every returned read
-result — so such a URN leaked the salt and simultaneously derived a key that could not decrypt
-anything (#2518).
+When a query IS recognized, `salt` is read as an ordinary query PARAMETER and the remainder of the
+query is discarded (no other parameter addresses a resource). The salt value MUST be resolved by these
+rules, which are a contract a second implementation is REQUIRED to match — a general-purpose
+query parser (e.g. `URLSearchParams`) does NOT satisfy them and will derive a different key:
 
-Only the query is removed. `#` is NOT a delimiter: a `<resource_key>` may contain a literal `#`
-(`notes#1.md` is a valid, working key) and MUST be preserved verbatim. The consequence, and it is a
-contract rather than an oversight: a `<resource_key>` cannot contain a literal `?`.
+- **Any position.** `?salt=<hex>`, `?salt=<hex>&x=1` and `?x=1&salt=<hex>` all carry the salt. A
+  parser MUST NOT read `salt` in final position only: that left the secret inside `<resource_key>` —
+  both a key-derivation input and a field copied onto every returned read result — so such a URN
+  leaked the salt AND derived a key that could not decrypt anything (#2518).
+- **No percent-decoding.** The value is taken verbatim; `?salt=%61%61` is NOT the salt `aa`, it is no
+  salt at all.
+- **The parameter name is case-sensitive.** `?SALT=<hex>` is not a salt parameter.
+- **Parameter boundary required.** `salt=` counts only at the start of the query or immediately after
+  an `&`; inside another parameter's value it is not a salt.
+- **First occurrence wins** on a duplicated parameter.
+- **Empty or valueless is null.** `?salt=` and `?salt` yield `null`, never `""`.
+- **Non-hex is null.** The value must be hex to be a salt.
+
+A value that fails these rules yields `salt: null`. The query is still split off whenever the literal
+`salt=` is present — including for a malformed value — so a secret in an unexpected alphabet cannot
+ride along inside `<resource_key>`.
 
 The **machine-readable authority** for this behaviour is `conformance/urn-parse.json`, shipped in the
 npm package. Every implementation of this scheme MUST pass that table; agreement between parsers is

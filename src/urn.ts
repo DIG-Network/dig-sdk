@@ -44,12 +44,11 @@ export interface ParsedUrn {
   readonly salt: string | null;
 }
 
-const URN_RE =
-  /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+?)(?:\?salt=([0-9a-fA-F]+))?$/;
-
 // The URN structure, matched against a string whose QUERY has already been removed: store id,
 // optional root, resource key. The key is greedy and may contain a `#` — a fragment is NOT a URN
-// concept here, and a store key literally named `notes#1.md` is a real, working key.
+// concept here, and a store key literally named `notes#1.md` is a real, working key. There is
+// deliberately ONE parse regex in this module: a second one that also knew where a salt lives was
+// the shape that let the parser and the redactor drift apart (#2518).
 const URN_PATH_RE =
   /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+)$/;
 
@@ -72,7 +71,20 @@ const SALT_QUERY_PARAM_RE = /(?:^|&)salt=([0-9a-fA-F]+)/;
 function splitQuery(s: string): { base: string; salt: string | null } {
   const at = s.indexOf("?");
   if (at < 0) return { base: s, salt: null };
-  const m = SALT_QUERY_PARAM_RE.exec(s.slice(at + 1));
+  const query = s.slice(at + 1);
+  // THE NARROWING, and the reason this change is purely additive. A `?` is a legal character in a
+  // resource key and always has been: `…/report?year=2024.csv` is a real, working public read whose
+  // retrieval key includes the `?year=2024.csv`. Splitting unconditionally would derive a different
+  // key and make already-published content unreadable — a regression in the one direction that
+  // cannot be migrated, since the content is already on chain. So a query is only recognized as a
+  // query when it could carry the secret this change exists to handle.
+  //
+  // Presence of the literal `salt=` (not a valid salt VALUE) is deliberately what governs the split:
+  // it closes the leak for every value alphabet, including a malformed non-hex one, which would
+  // otherwise stay inside `resourceKey` and ride onto every returned read result. Whether the value
+  // is a usable salt is a separate question, answered by SALT_QUERY_PARAM_RE below.
+  if (!query.includes("salt=")) return { base: s, salt: null };
+  const m = SALT_QUERY_PARAM_RE.exec(query);
   return { base: s.slice(0, at), salt: m ? m[1]!.toLowerCase() : null };
 }
 
@@ -132,40 +144,24 @@ function stripSaltParams(s: string): string {
  * (or any string) can be put into a logged/serialized error without republishing the out-of-band
  * secret that makes a store private.
  *
- * PURE and NON-THROWING by design: it NEVER calls `parseUrn` — calling the throwing parser here
- * would construct a `DigSdkError`, whose own context redaction would re-enter this function and
- * recurse without bound (a fatal, uncatchable crash). For a well-formed URN it rebuilds the string
- * with the salt group redacted; a final {@link stripSaltParams} pass then catches every `salt=`
- * the URN grammar does NOT capture.
+ * PURE and NON-THROWING by design: it does NOT parse. It never calls `parseUrn` — that would
+ * construct a `DigSdkError`, whose own context redaction would re-enter this function and recurse
+ * without bound (a fatal, uncatchable crash) — and it does not re-implement the grammar either.
  *
- * That final pass is load-bearing, not belt-and-braces (#2518): redaction must be a SUPERSET of what
- * any parser captures, never equal to it. {@link URN_RE} here captures a salt only in FINAL
- * position, and the strings that reach redaction are not all well-formed URNs — an error `value` may
- * be arbitrary text carrying a `salt=`. Sweeping every `salt=` occurrence is what makes the
- * guarantee independent of the grammar, so narrowing it to match the parser would reintroduce the
- * leak the moment the two drift apart again.
+ * Being grammar-INDEPENDENT is the guarantee, not a shortcut (#2518). Redaction must be a strict
+ * SUPERSET of whatever any parser captures: the strings that reach it are not all well-formed URNs
+ * (an error's `value` may be arbitrary text carrying a `salt=`), and a redactor that recognized only
+ * what the parser recognizes would leak again the moment the two drifted apart — which is exactly
+ * how the salt leaked in the first place. Sweeping EVERY `salt=` occurrence, wherever it appears, is
+ * what makes the guarantee independent of the grammar, so it must never be narrowed to match it.
  *
  * It must never throw and never construct a `DigSdkError`.
  */
 export function redactUrnSalt(raw: string): string {
   const s = String(raw ?? "");
   // A string with no `salt=` substring cannot carry a private-store salt — return it untouched
-  // (also skips the regexes for the common case: rpcMethod, plain paths, non-URN values).
+  // (also skips the regex for the common case: rpcMethod, plain paths, non-URN values).
   if (!s.includes("salt=")) return s;
-  const m = URN_RE.exec(s);
-  if (m?.[4]) {
-    // A well-formed URN whose salt the parser DID capture: rebuild it canonically, then sweep, so
-    // a second `salt=` hidden inside the resource key cannot ride along.
-    const storeId = m[1]!.toLowerCase();
-    const root = m[2] ? m[2].toLowerCase() : null;
-    const resourceKey = m[3]!;
-    const base = root
-      ? `urn:dig:chia:${storeId}:${root}/${resourceKey}`
-      : `urn:dig:chia:${storeId}/${resourceKey}`;
-    return stripSaltParams(`${base}?salt=${REDACTED_SALT}`);
-  }
-  // Either not a URN at all, or a URN whose salt the grammar did not capture (non-final position).
-  // Both are handled by stripping every `salt=<value>` occurrence from the raw string.
   return stripSaltParams(s);
 }
 
