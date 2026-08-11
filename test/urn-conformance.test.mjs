@@ -56,6 +56,10 @@ const REQUIRED_COVERAGE = {
       c.expect.resourceKey?.includes("salt="),
   "a partly-hex salt value (the leading-hex-run rule)": (c) =>
     /salt=[0-9a-f]+[g-z]/.test(c.urn) && c.expect.salt,
+  // The other half of the '?'-in-key pair. Covering only the no-salt half is what let the
+  // second-'?' leak ship green: every predicate passed while the secret sat in `resourceKey`.
+  "a '?'-in-key WITH a boundary salt (the second-'?' class)": (c) =>
+    c.expect.resourceKey?.includes("?") && c.expect.salt,
 };
 
 for (const [what, matches] of Object.entries(REQUIRED_COVERAGE)) {
@@ -97,6 +101,32 @@ test("a non-final-position salt never reaches the resource key (#2518)", () => {
         `the salt leaked into ${field}`,
       );
     }
+  }
+});
+
+test("the salt never survives inside resourceKey, at whichever '?' it is appended (#2518)", () => {
+  // The leak stated as a PROPERTY over the position of the salt query, because that is the axis the
+  // implementation kept getting wrong: first it read the salt only in FINAL position, then it split
+  // only at the FIRST `?`. Both left the secret inside `resourceKey`, which `readResource` copies
+  // onto the returned object — so `JSON.stringify(result)` republished the one value that makes a
+  // private store private. A `?` is legal in a key, so a salt appended after a second `?` is the
+  // grammar's own `<resource_key>[?salt=<hex>]` form, not an exotic input.
+  const secret = "deadbeefdeadbeef";
+  const tails = [
+    `secret.txt?salt=${secret}`,
+    `secret.txt?salt=${secret}&x=1`,
+    `secret.txt?x=1&salt=${secret}`,
+    `report?year=2024.csv?salt=${secret}`,
+    `a?b?salt=${secret}`,
+    `notes#1.md?salt=${secret}`,
+  ];
+  for (const tail of tails) {
+    const parsed = parseUrn(`urn:dig:chia:${"ab".repeat(32)}/${tail}`);
+    assert.equal(parsed.salt, secret, `${tail}: salt not extracted`);
+    assert.ok(
+      !JSON.stringify({ ...parsed, salt: null }).includes(secret),
+      `${tail}: the salt survived somewhere other than the salt field`,
+    );
   }
 });
 

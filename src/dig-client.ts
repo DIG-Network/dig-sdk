@@ -745,16 +745,24 @@ export class DigClient {
 async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
   const body: ReadableStream<Uint8Array> | null | undefined = res.body;
   if (!body || typeof body.getReader !== "function") {
+    // A Node `Readable` — what `node-fetch` v2, `cross-fetch` and the record/replay doubles built on
+    // them hand back — is truthy and has NO `getReader`, but it IS async-iterable, so it can be
+    // measured. It must be: `DigClientOptions.fetch` is a public, documented injection point, so this
+    // is the most common non-WHATWG shape a real embedder supplies, and falling through to
+    // `res.json()` would leave it with exactly the unbounded read this ceiling exists to close
+    // (#2517) — silently, since a chunked response carries no `content-length` either. Only a body
+    // that cannot be iterated AT ALL reaches the platform parse below.
+    if (isAsyncIterable(body)) {
+      return JSON.parse(
+        new TextDecoder().decode(await readBudgeted(body, res, method)),
+      ) as T;
+    }
     const declared = declaredContentLength(res);
     if (declared !== null && declared > MAX_RPC_RESPONSE_BYTES) {
-      throw new DigSdkError(
-        "RESOURCE_TOO_LARGE",
-        `dig RPC ${method} declared content-length ${declared} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
-        {
-          rpcMethod: method,
-          httpStatus: res.status,
-          maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
-        },
+      throw tooLargeError(
+        res,
+        method,
+        `declared content-length ${declared} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
       );
     }
     return (await res.json()) as T;
@@ -769,14 +777,10 @@ async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
       if (!value) continue;
       read += value.byteLength;
       if (read > MAX_RPC_RESPONSE_BYTES) {
-        throw new DigSdkError(
-          "RESOURCE_TOO_LARGE",
-          `dig RPC ${method} returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
-          {
-            rpcMethod: method,
-            httpStatus: res.status,
-            maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
-          },
+        throw tooLargeError(
+          res,
+          method,
+          `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
         );
       }
       chunks.push(value);
@@ -791,6 +795,83 @@ async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
     }
   }
   return JSON.parse(new TextDecoder().decode(concatBytes(chunks, read))) as T;
+}
+
+/**
+ * The one size refusal, shared by every body shape — so the ceiling cannot be enforced strictly on
+ * one path and loosely on another, and so a consumer matching on the code + context fields sees the
+ * same error whichever shape its injected `fetch` produced.
+ */
+function tooLargeError(
+  res: Response,
+  method: string,
+  detail: string,
+): DigSdkError {
+  return new DigSdkError("RESOURCE_TOO_LARGE", `dig RPC ${method} ${detail}`, {
+    rpcMethod: method,
+    httpStatus: res.status,
+    maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
+  });
+}
+
+/** True for any value that can be walked with `for await` — notably a Node `Readable`. */
+function isAsyncIterable(v: unknown): v is AsyncIterable<unknown> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  );
+}
+
+/**
+ * Accumulate an async-iterable body under the same hard budget the WHATWG reader path enforces.
+ *
+ * `for await` calls the iterator's `return()` when the loop exits early, which destroys a Node
+ * `Readable` and releases the socket — the guarantee `reader.cancel()` gives on the other path, so a
+ * hostile node that never ends its stream cannot leave a connection held open here either.
+ */
+async function readBudgeted(
+  source: AsyncIterable<unknown>,
+  res: Response,
+  method: string,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let read = 0;
+  for await (const value of source) {
+    const bytes = asBytes(value);
+    // A chunk whose size cannot be measured must REFUSE, never continue. `read += undefined` is
+    // NaN, and `NaN > MAX_RPC_RESPONSE_BYTES` is false — so a single unmeasurable chunk would
+    // silently disable the ceiling for the rest of the body. Failing closed on a shape we cannot
+    // account for is the only safe direction for a size guard.
+    if (bytes === null) {
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        `dig RPC ${method} streamed a chunk that is not bytes, so the response size cannot be bounded.`,
+        { rpcMethod: method, httpStatus: res.status },
+      );
+    }
+    if (bytes.byteLength === 0) continue;
+    read += bytes.byteLength;
+    if (read > MAX_RPC_RESPONSE_BYTES) {
+      throw tooLargeError(
+        res,
+        method,
+        `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
+      );
+    }
+    chunks.push(bytes);
+  }
+  return concatBytes(chunks, read);
+}
+
+/** A stream chunk as bytes — `Buffer`, any typed-array view, or a string — else `null`. */
+function asBytes(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) return value;
+  if (typeof value === "string") return new TextEncoder().encode(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return null;
 }
 
 /**

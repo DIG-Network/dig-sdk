@@ -94,23 +94,33 @@ const SALT_QUERY_VALUE_RE = new RegExp(
  * key, because a store key may literally contain `#`.
  */
 function splitQuery(s: string): { base: string; salt: string | null } {
-  const at = s.indexOf("?");
-  if (at < 0) return { base: s, salt: null };
-  const query = s.slice(at + 1);
-  // THE NARROWING, and the reason this change is purely additive. A `?` is a legal character in a
-  // resource key and always has been: `…/report?year=2024.csv` is a real, working public read whose
-  // retrieval key includes the `?year=2024.csv`. Splitting unconditionally would derive a different
-  // key and make already-published content unreadable — a regression in the one direction that
-  // cannot be migrated, since the content is already on chain. So a query is only recognized as a
-  // query when it carries a salt PARAMETER at a boundary (SALT_PARAM_AT_BOUNDARY above).
+  // EVERY `?` is a candidate, not just the first. A `?` is a legal character in a resource key and
+  // always has been, so the salt query is not necessarily the first one: `…/report?year=2024.csv`
+  // is a real working key, and `…/report?year=2024.csv?salt=<hex>` is the natural way to salt it —
+  // exactly the shape SPEC's `<resource_key>[?salt=<hex>]` grammar describes. Splitting at the first
+  // `?` unconditionally left that secret inside `resourceKey`, which is copied onto every returned
+  // read result: the #2518 leak itself, and a retrieval key that differs from 0.6.3's for content
+  // already published on chain.
   //
-  // Presence of the parameter, not a valid salt VALUE, is deliberately what governs the split: it
-  // closes the leak for every value alphabet, including a malformed non-hex one, which would
-  // otherwise stay inside `resourceKey` and ride onto every returned read result. Whether the value
-  // is a usable salt is the separate question SALT_QUERY_VALUE_RE answers.
-  if (!SALT_QUERY_MARKER_RE.test(query)) return { base: s, salt: null };
-  const m = SALT_QUERY_VALUE_RE.exec(query);
-  return { base: s.slice(0, at), salt: m ? m[1]!.toLowerCase() : null };
+  // The FIRST qualifying `?` wins, not the last, because it strips the most: on `a?salt=aa?salt=bb`
+  // the whole tail goes, so no later `salt=` can survive inside the key. Splitting at the last would
+  // leave `a?salt=aa` — a leak — which is the direction that must never be chosen.
+  for (let at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
+    const query = s.slice(at + 1);
+    // THE NARROWING, and the reason this change stays additive. A tail is only a query when it
+    // carries a salt PARAMETER at a boundary (SALT_PARAM_AT_BOUNDARY above). Splitting on anything
+    // broader derives a different key for a key that carries no salt and no secret at all, and makes
+    // already-published content unreadable — a regression that cannot be migrated.
+    //
+    // Presence of the parameter, not a valid salt VALUE, is deliberately what governs the split: it
+    // closes the leak for every value alphabet, including a malformed non-hex one, which would
+    // otherwise stay inside `resourceKey`. Whether the value is a USABLE salt is the separate
+    // question SALT_QUERY_VALUE_RE answers.
+    if (!SALT_QUERY_MARKER_RE.test(query)) continue;
+    const m = SALT_QUERY_VALUE_RE.exec(query);
+    return { base: s.slice(0, at), salt: m ? m[1]!.toLowerCase() : null };
+  }
+  return { base: s, salt: null };
 }
 
 /**

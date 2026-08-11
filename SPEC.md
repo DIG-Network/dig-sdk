@@ -256,11 +256,16 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
 a trailing segment is NOT assumed to be a query.
 
 **One boundary rule governs both decisions.** A `salt=` counts only where it sits at a **parameter
-boundary** — at the start of the segment after the first `?`, or immediately after an `&`. A parser
-MUST split a query off ONLY when such a boundary `salt=` is present; otherwise the whole remainder is
-part of `<resource_key>` and MUST be preserved verbatim. A `salt=` occurring inside another
+boundary** — at the start of a query segment (the text following some `?`), or immediately after an
+`&`. A parser MUST split a query off ONLY when such a boundary `salt=` is present; otherwise the whole
+remainder is part of `<resource_key>` and MUST be preserved verbatim. A `salt=` occurring inside another
 parameter's value is therefore neither a salt **nor** a query marker: `data?desalt=9.json`,
 `report?tag=salt=1.csv` and `secret.txt?note=salt=ff00ff00` keep their queries as part of the key.
+
+Every `?` is a split candidate, not only the first: a resource key may itself contain one, so a salt
+appended after a second `?` (`report?year=2024.csv?salt=<hex>`) is the grammar's own form and MUST be
+recognized. When more than one `?` carries a boundary `salt=`, the FIRST such `?` wins — it strips the
+most, so no later `salt=` can survive inside `<resource_key>`.
 
 A parser MUST NOT recognize the query with a broader test than it recognizes the salt. Splitting on an
 unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a

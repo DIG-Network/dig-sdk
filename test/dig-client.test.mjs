@@ -1109,3 +1109,103 @@ test("a legitimate-sized response body still parses (#2517)", async () => {
   });
   assert.equal(res.bytes.length, ciphertext.length);
 });
+
+// A NON-WHATWG body shape still gets the ceiling (#2517, adversarial-gate finding).
+//
+// `DigClientOptions.fetch` is a public, documented injection point, and the two most common Node
+// fetch implementations an embedder supplies — `node-fetch` v2 and `cross-fetch` — hand back a Node
+// `Readable` as `res.body`: truthy, NO `getReader`, and async-iterable. A chunked response from one
+// carries no `content-length` either, so before this the body reached `res.json()` completely
+// unbounded — the exact defect #2517 exists to close, silently absent for those consumers.
+function mockAsyncIterableBodyRpc(totalBytes, { chunkBytes = 1 << 20 } = {}) {
+  const meter = { produced: 0 };
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    // No `getReader` and no `content-length` — the node-fetch v2 shape exactly.
+    body: {
+      async *[Symbol.asyncIterator]() {
+        while (meter.produced < totalBytes) {
+          const n = Math.min(chunkBytes, totalBytes - meter.produced);
+          meter.produced += n;
+          yield Buffer.alloc(n, 0x20);
+        }
+      },
+    },
+    headers: { get: () => null },
+    json: async () => {
+      throw new Error("res.json() must not be reached: the body is measurable");
+    },
+  });
+  return { fetchImpl, meter };
+}
+
+test("bounds an async-iterable (node-fetch v2 shaped) response body (#2517)", async () => {
+  const { fetchImpl, meter } = mockAsyncIterableBodyRpc(64 * 1024 * 1024);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () =>
+      dig.read({
+        urn: `urn:dig:chia:${STORE}/index.html`,
+        root: "cd".repeat(32),
+      }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+  // Measure the PULL, not just the code: a buffer-then-check implementation returns the same error
+  // after draining all 64 MiB, which is the resource exhaustion the ceiling exists to prevent.
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `read did not stop early: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a legal async-iterable response still parses — the bound is not a blanket refusal (#2517)", async () => {
+  // The control. Without it, a fix that simply refused every non-WHATWG body would pass the test
+  // above while breaking every `node-fetch` consumer.
+  const payload = Buffer.from(
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { items: [], total: 0 } }),
+  );
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      async *[Symbol.asyncIterator]() {
+        // Split mid-payload, so a per-chunk decode bug would corrupt the parse.
+        yield payload.subarray(0, 7);
+        yield payload.subarray(7);
+      },
+    },
+    headers: { get: () => null },
+    json: async () => {
+      throw new Error("res.json() must not be reached: the body is measurable");
+    },
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.listCollectionItems({
+    storeId: STORE,
+    collection: "c",
+  });
+  assert.deepEqual(res.items, []);
+});
+
+test("refuses an unmeasurable stream chunk rather than failing open (#2517)", async () => {
+  // `read += undefined` is NaN and `NaN > MAX` is FALSE, so one unmeasurable chunk would silently
+  // disable the ceiling for the rest of the body. A size guard must fail CLOSED on a shape it
+  // cannot account for.
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield { not: "bytes" };
+      },
+    },
+    headers: { get: () => null },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+  );
+});

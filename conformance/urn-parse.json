@@ -239,6 +239,33 @@
         "resourceKey": "secret.txt",
         "salt": "ff00"
       }
+    },
+    {
+      "name": "a '?'-containing key WITH a salt appended after a SECOND '?' — the natural way to salt such a key, and the grammar's own form. Every '?' is a split candidate, so a parser that only ever considers the FIRST one leaves the secret inside resourceKey (#2518) and derives a different key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/report?year=2024.csv?salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "report?year=2024.csv",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "when more than one '?' carries a salt parameter the FIRST qualifying one wins, because it strips the most — splitting at the last would leave the earlier 'salt=aa' inside the resource key, which is the leak direction",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/a?salt=aa?salt=bb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "a",
+        "salt": "aa"
+      }
+    },
+    {
+      "name": "a URN whose resource key is ONLY a salt query has an empty key once the query is removed, and an empty resource key is not a URN",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/?salt=ff00ff00",
+      "expect": {
+        "invalid": true
+      }
     }
   ]
 }
