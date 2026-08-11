@@ -61,10 +61,12 @@
       "import": "./dist/next.js",
       "require": "./dist/next.cjs"
     },
+    "./conformance/urn-parse.json": "./conformance/urn-parse.json",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "conformance",
     "README.md",
     "LICENSE"
   ],

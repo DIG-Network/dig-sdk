@@ -252,14 +252,34 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
   `index.html`.
 - `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
 
+**Query handling (normative).** Everything from the FIRST `?` is the query and is NOT part of
+`<resource_key>`. Within it, `salt` is read as an ordinary query PARAMETER — in ANY position
+(`?salt=<hex>`, `?salt=<hex>&x=1`, `?x=1&salt=<hex>`) — and the remainder of the query is discarded,
+because no other parameter addresses a resource. A `salt` value that is not hex is not a salt.
+
+A parser MUST NOT read `salt` in final position only. Doing so left the secret inside
+`<resource_key>`, which is BOTH a key-derivation input and a field copied onto every returned read
+result — so such a URN leaked the salt and simultaneously derived a key that could not decrypt
+anything (#2518).
+
+Only the query is removed. `#` is NOT a delimiter: a `<resource_key>` may contain a literal `#`
+(`notes#1.md` is a valid, working key) and MUST be preserved verbatim. The consequence, and it is a
+contract rather than an oversight: a `<resource_key>` cannot contain a literal `?`.
+
+The **machine-readable authority** for this behaviour is `conformance/urn-parse.json`, shipped in the
+npm package. Every implementation of this scheme MUST pass that table; agreement between parsers is
+verified against it, never asserted (the parsed `<resource_key>`/`salt` pair determines the derived
+keys, so two parsers that disagree read different bytes).
+
 **Salt redaction (normative).** The salt is the out-of-band secret that makes a store private, so it
 MUST NOT be republished by the SDK's own diagnostics. Every `DigSdkError` redacts its context when
 the error is constructed: any lowercase `salt=<value>` occurring in a string reachable from
 `context` by walking its own enumerable array elements and object properties — in a well-formed URN,
 in a malformed one, or in free text — is replaced with the literal `<redacted>` before it is stored.
-Within that reach, redaction MUST be a strict superset of what the URN grammar captures: a salt in a
-non-final position (`…?salt=<hex>&x=1`, `…?salt=<hex>#frag`) is not captured by the URN pattern and
-MUST still be redacted.
+Within that reach, redaction MUST be a strict superset of what the URN grammar captures, and MUST NOT
+be narrowed to match the parser: the strings that reach redaction are not all well-formed URNs (an
+error's `value` may be arbitrary text), so every `salt=<value>` occurrence is swept wherever it
+appears. That independence is what keeps the guarantee intact if the two ever drift apart again.
 
 **Error construction is TOTAL (normative).** Constructing a `DigSdkError` MUST NOT throw, whatever
 shape `context` has. A throw during construction happens inside a `throw new DigSdkError(...)`

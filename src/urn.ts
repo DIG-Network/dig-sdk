@@ -1,6 +1,21 @@
-// DIG URN parsing + canonicalization — PURE, dependency-free, and identical to the parser the
-// hub (apps/web/lib/dig-client.js), the extension, and the companion use. Kept pure (no wasm) so
-// it is trivially unit-testable under `node --test` and usable on any runtime.
+// DIG URN parsing + canonicalization — PURE, dependency-free, and usable on any runtime (no wasm,
+// so it is trivially unit-testable under `node --test`).
+//
+// CROSS-REPO STATUS (measured, not asserted — #2518). The parsed `resourceKey` and `salt` feed
+// retrieval-key and decryption-key derivation, so two implementations that parse the same URN
+// differently derive DIFFERENT keys and read different bytes. This file therefore states what is
+// TRUE of the sibling parsers rather than claiming they agree:
+//
+//   • dig-chrome-extension (`src/lib/dig-urn.ts`) extracts `salt=` from ANY position in the query
+//     and discards the rest of the query. This module MATCHES that behaviour.
+//   • hub.dig.net (`apps/web/lib/dig-client.ts`) still captures `salt=` only in FINAL position, so
+//     it derives a wrong key (with `salt: null`) for every non-final-position salt. It adopts this
+//     behaviour after this release; until then the two diverge on exactly those URNs — none of
+//     which can decrypt under either parser, so no working read is affected.
+//
+// The authority for that agreement is the machine-readable conformance table in
+// `conformance/urn-parse.json`, which any implementation can be run against. Verify against the
+// fixture; never against this comment.
 //
 // A DIG URN addresses one resource inside a store:
 //
@@ -32,6 +47,35 @@ export interface ParsedUrn {
 const URN_RE =
   /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+?)(?:\?salt=([0-9a-fA-F]+))?$/;
 
+// The URN structure, matched against a string whose QUERY has already been removed: store id,
+// optional root, resource key. The key is greedy and may contain a `#` — a fragment is NOT a URN
+// concept here, and a store key literally named `notes#1.md` is a real, working key.
+const URN_PATH_RE =
+  /^urn:dig:chia:([0-9a-fA-F]{64})(?::([0-9a-fA-F]{64}))?\/(.+)$/;
+
+// `salt=<hex>` as a query PARAMETER, in any position. Anchored to a parameter boundary (`?`/`&`, via
+// the caller slicing the query off first) so it cannot match a `salt=` embedded in some other
+// parameter's value; unanchored at the end so a trailing `#fragment` or `&next=…` terminates it.
+const SALT_QUERY_PARAM_RE = /(?:^|&)salt=([0-9a-fA-F]+)/;
+
+/**
+ * Split a URN into its query-free base and the `salt` its query carried, if any.
+ *
+ * The salt is a QUERY PARAMETER, so it is read as one: at any position, and with the rest of the
+ * query discarded because no other parameter addresses a resource. Reading it only in FINAL position
+ * (as this module and the hub did) left the secret sitting inside `resourceKey`, which then leaked
+ * onto every returned read result AND derived a key that could not decrypt anything (#2518).
+ *
+ * Only the query is removed. Everything before the first `?` — INCLUDING a `#` — is the resource
+ * key, because a store key may literally contain `#`.
+ */
+function splitQuery(s: string): { base: string; salt: string | null } {
+  const at = s.indexOf("?");
+  if (at < 0) return { base: s, salt: null };
+  const m = SALT_QUERY_PARAM_RE.exec(s.slice(at + 1));
+  return { base: s.slice(0, at), salt: m ? m[1]!.toLowerCase() : null };
+}
+
 /**
  * Parse a DIG URN into its parts. Throws on a malformed URN.
  *
@@ -41,7 +85,8 @@ const URN_RE =
  */
 export function parseUrn(raw: string): ParsedUrn {
   const s = String(raw ?? "").trim();
-  const m = URN_RE.exec(s);
+  const { base, salt } = splitQuery(s);
+  const m = URN_PATH_RE.exec(base);
   if (!m) {
     throw new DigSdkError(
       "INVALID_ARGUMENT",
@@ -63,7 +108,7 @@ export function parseUrn(raw: string): ParsedUrn {
     storeId: m[1]!.toLowerCase(),
     root: m[2] ? m[2].toLowerCase() : null,
     resourceKey: m[3]!,
-    salt: m[4] ? m[4].toLowerCase() : null,
+    salt,
   };
 }
 
@@ -87,19 +132,18 @@ function stripSaltParams(s: string): string {
  * (or any string) can be put into a logged/serialized error without republishing the out-of-band
  * secret that makes a store private.
  *
- * PURE and NON-THROWING by design: it matches with the SAME {@link URN_RE} regex `parseUrn` uses
- * (so it is not a divergent parser) but NEVER calls `parseUrn` — calling the throwing parser here
+ * PURE and NON-THROWING by design: it NEVER calls `parseUrn` — calling the throwing parser here
  * would construct a `DigSdkError`, whose own context redaction would re-enter this function and
  * recurse without bound (a fatal, uncatchable crash). For a well-formed URN it rebuilds the string
  * with the salt group redacted; a final {@link stripSaltParams} pass then catches every `salt=`
  * the URN grammar does NOT capture.
  *
- * That final pass is load-bearing, not belt-and-braces (#2518): `URN_RE`'s optional `?salt=` group
- * only captures a salt in FINAL position, and its resource-key group is greedy enough to absorb a
- * query tail — so `…?salt=<secret>&x=1`, `…?salt=<secret>#frag`, and the rooted form with a
- * trailing param all MATCH with the salt group ABSENT. Returning such a string untouched (because
- * "the URN parser found no salt") published the secret into any serialized error. Redaction must
- * therefore be a superset of what the parser captures, never equal to it.
+ * That final pass is load-bearing, not belt-and-braces (#2518): redaction must be a SUPERSET of what
+ * any parser captures, never equal to it. {@link URN_RE} here captures a salt only in FINAL
+ * position, and the strings that reach redaction are not all well-formed URNs — an error `value` may
+ * be arbitrary text carrying a `salt=`. Sweeping every `salt=` occurrence is what makes the
+ * guarantee independent of the grammar, so narrowing it to match the parser would reintroduce the
+ * leak the moment the two drift apart again.
  *
  * It must never throw and never construct a `DigSdkError`.
  */
