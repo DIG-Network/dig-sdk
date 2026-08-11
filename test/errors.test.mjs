@@ -258,3 +258,43 @@ test("a getter that throws in context cannot break error construction (#2719)", 
   assert.equal(err.code, "RPC_ERROR");
   assert.doesNotThrow(() => JSON.stringify(err.toJSON()));
 });
+
+// ---------------------------------------------------------------------------------------------
+// A `__proto__`-keyed context survives redaction as ordinary data (#2719).
+//
+// The redaction copy is built with `out[k] = …`, and for `k === "__proto__"` that assignment does
+// not create a property — it invokes the setter on `Object.prototype` and replaces the COPY's
+// prototype. This is not prototype pollution (the target is a fresh object, and the subtree is
+// already redacted before assignment), but it costs two real things: the subtree vanishes from
+// `JSON.stringify`, so the diagnostics are silently lost, and a `"__proto__": null` value produces
+// a null-prototype object on which consumer code calling `sub.hasOwnProperty(...)` throws.
+// ---------------------------------------------------------------------------------------------
+
+test("a __proto__-keyed context stays serializable and pollutes nothing (#2719)", () => {
+  const context = JSON.parse(
+    '{"rpcMethod":"dig.getContent","__proto__":{"polluted":"urn?salt=ff00ff00"}}',
+  );
+  const err = new DigSdkError("RPC_MALFORMED_RESPONSE", "hostile key", context);
+
+  // The subtree is DATA: it round-trips through JSON rather than disappearing into a prototype.
+  const serialized = JSON.parse(JSON.stringify(err.context));
+  assert.equal(serialized.rpcMethod, "dig.getContent");
+  assert.deepEqual(Object.keys(serialized).sort(), ["__proto__", "rpcMethod"]);
+  // Redaction still reached inside it — being data must not mean being skipped.
+  assert.ok(!JSON.stringify(err.context).includes("ff00ff00"));
+
+  // And nothing was written through to the shared prototype, on this object or globally.
+  assert.equal(Object.getPrototypeOf(err.context), Object.prototype);
+  assert.equal({}.polluted, undefined);
+});
+
+test("a null __proto__ value leaves the redacted context usable (#2719)", () => {
+  const context = JSON.parse('{"rpcMethod":"dig.getContent","__proto__":null}');
+  const err = new DigSdkError("RPC_MALFORMED_RESPONSE", "null proto", context);
+  // The failure this pins: assigning `null` through the setter yields a null-prototype object, so
+  // ordinary consumer code touching an inherited method throws instead of reading a field.
+  assert.doesNotThrow(() =>
+    Object.prototype.hasOwnProperty.call(err.context, "rpcMethod"),
+  );
+  assert.equal(err.context.hasOwnProperty("rpcMethod"), true);
+});

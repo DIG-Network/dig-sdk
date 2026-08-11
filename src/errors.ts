@@ -199,16 +199,42 @@ function redactContext<T>(
     // propagate out of the constructor. Read each property defensively and record the failure as a
     // placeholder rather than losing the whole error.
     try {
-      out[k] = redactContext(
-        (value as Record<string, unknown>)[k],
-        seen,
-        depth + 1,
+      defineDataProperty(
+        out,
+        k,
+        redactContext((value as Record<string, unknown>)[k], seen, depth + 1),
       );
     } catch {
-      out[k] = OMITTED;
+      defineDataProperty(out, k, OMITTED);
     }
   }
   return out as T;
+}
+
+/**
+ * Write `value` at `key` as an ordinary own data property — never through a setter.
+ *
+ * `out[key] = value` is not an assignment for every key. `out["__proto__"]` reaches the accessor on
+ * `Object.prototype` and REPLACES the copy's prototype instead of creating a property, which loses
+ * the subtree from `JSON.stringify` (silently discarded diagnostics) and, for a `null` value, hands
+ * the consumer a null-prototype object that throws on `hasOwnProperty`. `defineProperty` writes the
+ * slot the redaction copy is supposed to have, whatever the key is called.
+ *
+ * This is not a pollution fix — the target is a fresh object and the subtree is already redacted
+ * before it is written — but a redaction pass must not be able to lose or booby-trap the diagnostics
+ * it exists to make safe.
+ */
+function defineDataProperty(
+  out: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(out, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
 }
 
 /** Own enumerable string keys of `value`, or none if the object refuses enumeration. */
