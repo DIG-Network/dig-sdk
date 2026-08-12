@@ -10,12 +10,15 @@
     "Shipped inside the npm package, so a consumer reads it from",
     "@dignetwork/dig-sdk/conformance/urn-parse.json rather than copying it.",
     "",
-    "Salt-parameter rules this table encodes, all normative (SPEC.md 7.1). ONE boundary rule governs",
-    "both decisions: a 'salt=' counts only at the start of the query or right after an '&', and the",
-    "query is split off ONLY when such a boundary 'salt=' is present (a '?' is legal in a resource key,",
-    "so a broader split truncates working keys). Values are NOT percent-decoded; the parameter name is",
-    "case-sensitive; the first boundary occurrence with a hex value wins; an empty or valueless salt is",
-    "null; and the value is the leading hex run."
+    "The rules themselves are NOT restated here — they are normative in the superproject's SYSTEM.md,",
+    "section 'DIG URN grammar (normative, cross-repo)', the authority for every DIG parser. This file",
+    "is the machine-readable form of that section, and the rows are the contract: a rule restated in",
+    "prose beside them could drift from them silently, which is the failure this table exists to end.",
+    "",
+    "Rows are load-bearing, and that is CHECKED. test/urn-table-discrimination.test.mjs runs the",
+    "known-wrong sibling parsers against this table and requires each to fail at least TWO rows, so",
+    "deleting or weakening any single row cannot unpin a rule. Measured before that check existed: a",
+    "parser whose only defect was a case-insensitive parameter name failed exactly ONE row."
   ],
   "version": 1,
   "cases": [

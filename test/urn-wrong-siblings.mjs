@@ -69,7 +69,10 @@ export const WRONG_SIBLINGS = {
     const at = urn.indexOf("?");
     if (at < 0) return outcome({ base: urn, salt: null });
     const m = VALUE_RE.exec(urn.slice(at + 1));
-    return outcome({ base: urn.slice(0, at), salt: m ? m[1].toLowerCase() : null });
+    return outcome({
+      base: urn.slice(0, at),
+      salt: m ? m[1].toLowerCase() : null,
+    });
   },
 
   // The plausible shortcut: hand the query tail to a general-purpose query parser. `URLSearchParams`
@@ -81,7 +84,10 @@ export const WRONG_SIBLINGS = {
       if (!MARKER_RE.test(query)) continue;
       const raw = new URLSearchParams(query).get("salt");
       const hex = /^([0-9a-fA-F]+)/.exec(raw ?? "");
-      return outcome({ base: urn.slice(0, at), salt: hex ? hex[1].toLowerCase() : null });
+      return outcome({
+        base: urn.slice(0, at),
+        salt: hex ? hex[1].toLowerCase() : null,
+      });
     }
     return outcome({ base: urn, salt: null });
   },

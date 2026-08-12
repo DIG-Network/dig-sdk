@@ -1,29 +1,17 @@
 // DIG URN parsing + canonicalization — PURE, dependency-free, and usable on any runtime (no wasm,
 // so it is trivially unit-testable under `node --test`).
 //
-// CROSS-REPO STATUS (measured, not asserted — #2518). The parsed `resourceKey` and `salt` feed
-// retrieval-key and decryption-key derivation, so two implementations that parse the same URN
-// differently derive DIFFERENT keys and read different bytes. This file therefore states what is
-// TRUE of the sibling parsers rather than claiming they agree:
+// WHERE THE RULES LIVE. This module is a conforming IMPLEMENTATION of the DIG URN grammar, not its
+// authority. The grammar is normative in the superproject's `SYSTEM.md`, section "DIG URN grammar
+// (normative, cross-repo)"; `SPEC.md` §7.1 records this package's own API contract on top of it.
 //
-//   • dig-chrome-extension (`src/lib/dig-urn.ts:153-159`) extracts `salt=` at a `[?&]` boundary in
-//     ANY position. This module AGREES on that — the #2518 fix — and on the value semantics, and
-//     still differs in two measured ways: the extension matches the parameter NAME case-insensitively
-//     (`?SALT=ff00ff00` is a salt there, not here), and after removing the salt it strips any
-//     remaining query UNCONDITIONALLY (`\?.*$`), so it truncates `data?desalt=9.json` to `data` and
-//     `report?year=2024.csv` to `report`. Those are real, working keys with no salt and no secret, so
-//     on that class the extension is the one that is wrong: it destroys a key for content already
-//     published on chain. The fixture encodes THIS module's behaviour as the contract, the extension
-//     case is expected to fail against it, and fixing it is that repo's leg (#2725). Converging by
-//     copying a data-losing behaviour is not the byte-identity §4.1 protects.
-//   • hub.dig.net (`apps/web/lib/dig-client.ts:490`) still captures `salt=` only in FINAL position, so
-//     it derives a wrong key (with `salt: null`) for every non-final-position salt. It adopts this
-//     behaviour after this release; until then the two diverge on exactly those URNs — none of
-//     which can decrypt under either parser, so no working read is affected.
+// The machine-readable authority is `conformance/urn-parse.json`, shipped in the npm package and run
+// against this parser by `test/urn-conformance.test.mjs`. Any implementation can be run against it,
+// and `test/urn-table-discrimination.test.mjs` proves the table still rejects the wrong readings.
 //
-// The authority for that agreement is the machine-readable conformance table in
-// `conformance/urn-parse.json`, which any implementation can be run against. Verify against the
-// fixture; never against this comment.
+// Nothing about a SIBLING parser is stated here. A comment cannot fail, so a comment asserting a
+// cross-repo fact goes stale silently — which is the defect that produced #2518, when this file
+// claimed a byte-identity it did not have. Ask the table, never this header.
 //
 // A DIG URN addresses one resource inside a store:
 //
@@ -90,9 +78,9 @@ const SALT_AFTER_AMP = `&${SALT_PARAM_NAME}`;
 //   • this asks "where is the salt INSIDE the query?" — and once a `?` has been judged to start the
 //     query, every later `?` is inside it and is a separator, not part of a parameter name.
 //
-// The wider set is what SPEC §7.1 already specifies (a boundary is "the start of a query segment …
+// The wider set is what the SYSTEM.md grammar already specifies (a boundary is "the start of a query segment …
 // or immediately after an `&`", first boundary occurrence carrying a HEX value wins). Honouring only
-// `&` made the code and the SPEC derive different keys, and the code's answer was the silently
+// `&` made the code and the grammar derive different keys, and the code's answer was the silently
 // unusable one: `a?salt=zz?salt=ff00ff00` yielded no salt at all, so nothing could decrypt.
 const SALT_QUERY_VALUE_RE = new RegExp(
   `(?:^|[&?])${SALT_PARAM_NAME}([0-9a-fA-F]+)`,

@@ -244,42 +244,23 @@ A DIG resource is addressed by a URN of the exact form:
 urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
 ```
 
-- `<store_id>` and the optional `<root>` are each **exactly 64 lowercase-normalized hex chars** (a
-  32-byte SHA-256). `parseUrn` accepts mixed case and normalizes; emitters MUST lowercase.
-- `<root>` is OPTIONAL and, when present, is ONLY a trust anchor (which generation to verify
-  against) — it MUST NOT affect the retrieval or decryption keys (§7.2).
-- `<resource_key>` is the path within the store; an empty resource key resolves to the default view
-  `index.html`.
-- `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
+The grammar itself — what a URN means, which `?` starts a query, and how the `salt` parameter is
+recognized and read — is **NOT restated here**. It is normative in the superproject's `SYSTEM.md`,
+section "DIG URN grammar (normative, cross-repo)", which is the authority for every DIG parser in
+every repo and every language. dig-sdk is a conforming implementation of it, not its owner: this
+package once carried its own copy of these rules, and a copy kept in step by prose rather than by a
+test is exactly how two parsers came to derive different keys (#2518).
 
-**Query handling (normative).** A `<resource_key>` MAY contain any character, `?` and `#` included, so
-a trailing segment is NOT assumed to be a query.
+What remains here is dig-sdk's OWN contract — the API behaviour a consumer of this package may rely
+on, over and above the shared grammar.
 
-**Two decisions, one parameter name, two separator sets.** A `salt=` counts only where it sits at a
-**parameter boundary**, and the boundary set depends on which decision is being made:
-
-- **Which `?` STARTS the query.** A `?` qualifies only when the text after it begins with `salt=` or
-  contains `&salt=`. A `?`-borne `salt=` MUST NOT qualify an earlier `?`: otherwise
-  `report?year=2024.csv?salt=ff00ff00` would split at its FIRST `?` and truncate a real,
-  already-published key to `report`.
-- **Where the salt sits INSIDE the chosen query.** Once a `?` has been judged to start the query,
-  every later `?` is _inside_ the query and is a separator: within that tail, `salt=` counts at the
-  start, after an `&`, **and** after a `?`. So `a?salt=zz?salt=ff00ff00` carries the salt
-  `ff00ff00` — a parser honouring only `&` here derives no salt at all and silently cannot decrypt.
-
-A parser MUST split a query off ONLY when a qualifying `?` is present; otherwise the whole
-remainder is part of `<resource_key>` and MUST be preserved verbatim. A `salt=` occurring inside another
-parameter's value is therefore neither a salt **nor** a query marker: `data?desalt=9.json`,
-`report?tag=salt=1.csv` and `secret.txt?note=salt=ff00ff00` keep their queries as part of the key.
-
-Every `?` is a split candidate, not only the first: a resource key may itself contain one, so a salt
-appended after a second `?` (`report?year=2024.csv?salt=<hex>`) is the grammar's own form and MUST be
-recognized. When more than one `?` carries a boundary `salt=`, the FIRST such `?` wins — it strips the
-most, so no later `salt=` can survive inside `<resource_key>`.
-
-When two boundary occurrences carry DIFFERENT hex values, the FIRST is the salt: `k??salt=aa11&salt=ff00`
-carries `aa11`, because the `?` beginning the chosen query's second segment is a boundary and precedes
-the `&`.
+- `parseUrn` accepts a mixed-case `<store_id>`/`<root>` and returns them lowercased; `<resource_key>`
+  is returned verbatim. `salt` is returned lowercased, or `null`.
+- Conformance is machine-checked, never asserted: `conformance/urn-parse.json` is shipped in the npm
+  package (importable as `@dignetwork/dig-sdk/conformance/urn-parse.json`) and is run against this
+  parser by `test/urn-conformance.test.mjs`. `test/urn-table-discrimination.test.mjs` additionally
+  proves the table still REJECTS the known-wrong readings, so no rule in it rests on a single row.
+  A second implementation demonstrates agreement by passing that table.
 
 `parseUrn` MUST reject a non-scalar argument (object, array, function) with a coded
 `INVALID_ARGUMENT` error BEFORE coercing it to a string, and MUST NOT place the value in the error

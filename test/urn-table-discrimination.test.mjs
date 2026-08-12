@@ -111,7 +111,10 @@ test("a case with two salt candidates offers two DIFFERENT values", () => {
   const multi = table.cases.filter(
     (c) => (c.urn.match(/salt=/gi) ?? []).length > 1,
   );
-  assert.ok(multi.length >= 4, "the ordering rules need several multi-candidate rows");
+  assert.ok(
+    multi.length >= 4,
+    "the ordering rules need several multi-candidate rows",
+  );
   for (const c of multi) {
     const values = [...c.urn.matchAll(/salt=([^&?#]*)/gi)].map((m) => m[1]);
     assert.equal(
