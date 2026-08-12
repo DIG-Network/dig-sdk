@@ -10,12 +10,15 @@
     "Shipped inside the npm package, so a consumer reads it from",
     "@dignetwork/dig-sdk/conformance/urn-parse.json rather than copying it.",
     "",
-    "Salt-parameter rules this table encodes, all normative (SPEC.md 7.1). ONE boundary rule governs",
-    "both decisions: a 'salt=' counts only at the start of the query or right after an '&', and the",
-    "query is split off ONLY when such a boundary 'salt=' is present (a '?' is legal in a resource key,",
-    "so a broader split truncates working keys). Values are NOT percent-decoded; the parameter name is",
-    "case-sensitive; the first boundary occurrence with a hex value wins; an empty or valueless salt is",
-    "null; and the value is the leading hex run."
+    "The rules themselves are NOT restated here — they are normative in the superproject's SYSTEM.md,",
+    "section 'DIG URN grammar (normative, cross-repo)', the authority for every DIG parser. This file",
+    "is the machine-readable form of that section, and the rows are the contract: a rule restated in",
+    "prose beside them could drift from them silently, which is the failure this table exists to end.",
+    "",
+    "Rows are load-bearing, and that is CHECKED. test/urn-table-discrimination.test.mjs runs the",
+    "known-wrong sibling parsers against this table and requires each to fail at least TWO rows, so",
+    "deleting or weakening any single row cannot unpin a rule. Measured before that check existed: a",
+    "parser whose only defect was a case-insensitive parameter name failed exactly ONE row."
   ],
   "version": 1,
   "cases": [
@@ -198,6 +201,76 @@
         "root": null,
         "resourceKey": "secret.txt?SALT=ff00ff00",
         "salt": null
+      }
+    },
+    {
+      "name": "the case-sensitivity rule in MIXED case: '?SaLt=' is not a salt parameter either, so it is neither read as a salt nor treated as a query marker",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?SaLt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?SaLt=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "case sensitivity in NON-FINAL position: an uppercase name after another parameter is still not a salt, and the whole tail stays in the key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?x=1&SALT=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?x=1&SALT=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "case sensitivity changing the SPLIT decision: a '?SALT=' tail cannot qualify a '?' as the start of a query, so a real '?'-containing key survives whole (a case-insensitive sibling truncates it to 'report?year=2024.csv')",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/report?year=2024.csv?SALT=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "report?year=2024.csv?SALT=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "case sensitivity changing the SALT VALUE: an uppercase name preceding a real lowercase one is skipped, so the salt is 'bbbb' — a case-insensitive sibling reads 'aaaa' and derives a decryption key that cannot read the content",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?SALT=aaaa&salt=bbbb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "bbbb"
+      }
+    },
+    {
+      "name": "a key whose FIRST character is '#': stripping the '#' as a fragment leaves an empty key, so a '#'-stripping sibling rejects a URN that is valid",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/#hash.md",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "#hash.md",
+        "salt": null
+      }
+    },
+    {
+      "name": "'#' and '?' in ONE key with no salt anywhere: neither is a delimiter here, so the whole remainder is the key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/notes#1?draft=yes.md",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "notes#1?draft=yes.md",
+        "salt": null
+      }
+    },
+    {
+      "name": "the leading-hex-run rule in NON-FINAL position: the value ends at the first non-hex character and the parameter continues, so the salt is 'ff' — a parser requiring the whole value to be hex reads no salt at all here",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=ffzz&x=1",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff"
       }
     },
     {

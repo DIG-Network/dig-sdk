@@ -187,9 +187,10 @@ test("the linear split agrees with the reference rule on every generated input (
 });
 
 // ---------------------------------------------------------------------------------------------
-// The salt VALUE is read at `?` boundaries too, so SPEC §7.1 and the scanner derive the same key.
+// The salt VALUE is read at `?` boundaries too, so the SYSTEM.md grammar and the scanner derive the
+// same key.
 //
-// SPEC defines a boundary as "the start of a query segment (the text following some `?`), or
+// The grammar defines a boundary as "the start of a query segment (the text following some `?`), or
 // immediately after an `&`", with the FIRST boundary occurrence carrying a hex value winning. The
 // value scanner only honoured `&`, so the two derived different keys — and the code's answer was the
 // silently-unusable one:

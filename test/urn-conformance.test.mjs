@@ -48,6 +48,20 @@ const REQUIRED_COVERAGE = {
   "a duplicated salt parameter": (c) =>
     (c.urn.match(/salt=/g) ?? []).length > 1,
   "an uppercase parameter name": (c) => c.urn.includes("SALT="),
+  // Case sensitivity used to rest on that single row: a sibling whose ONLY defect was matching the
+  // name case-insensitively failed exactly one row, so deleting it unpinned a rule whose violation
+  // silently changes a derived decryption key. These three demand the rule be visible on all the
+  // axes it acts on — the value read, the split decision, and the mixed-case spelling.
+  "a MIXED-case parameter name": (c) => /\?SaLt=/.test(c.urn),
+  "a miscased parameter name that changes the SPLIT decision": (c) =>
+    /\?[^?]+\?SALT=/.test(c.urn) && c.expect.resourceKey?.includes("SALT="),
+  "a miscased name preceding a real one, so the SALT VALUE differs": (c) =>
+    /SALT=[0-9a-f]+&salt=/.test(c.urn) && c.expect.salt !== null,
+  // The '#' class, which two sibling implementations were measured truncating. A row whose key
+  // merely contains '#' is not enough on its own: a key that BEGINS with one turns the defect into
+  // a rejected URN, which is a different observable.
+  "a resource key BEGINNING with '#'": (c) =>
+    c.expect.resourceKey?.startsWith("#"),
   "'salt=' inside another parameter's value": (c) => /=salt=/.test(c.urn),
   "a 'salt=' substring at NO parameter boundary, with the key preserved verbatim":
     (c) =>
