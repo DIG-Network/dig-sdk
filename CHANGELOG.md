@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.7.0] - 2026-08-12
+
+### Bug Fixes
+- **sdk:** Bound response bodies, total error construction, salt as a query param (0.7.0) (#14)
+
 ## [0.6.3] - 2026-08-11
 
 ### Bug Fixes
