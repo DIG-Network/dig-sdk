@@ -201,6 +201,76 @@
       }
     },
     {
+      "name": "the case-sensitivity rule in MIXED case: '?SaLt=' is not a salt parameter either, so it is neither read as a salt nor treated as a query marker",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?SaLt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?SaLt=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "case sensitivity in NON-FINAL position: an uppercase name after another parameter is still not a salt, and the whole tail stays in the key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?x=1&SALT=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?x=1&SALT=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "case sensitivity changing the SPLIT decision: a '?SALT=' tail cannot qualify a '?' as the start of a query, so a real '?'-containing key survives whole (a case-insensitive sibling truncates it to 'report?year=2024.csv')",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/report?year=2024.csv?SALT=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "report?year=2024.csv?SALT=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "case sensitivity changing the SALT VALUE: an uppercase name preceding a real lowercase one is skipped, so the salt is 'bbbb' — a case-insensitive sibling reads 'aaaa' and derives a decryption key that cannot read the content",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?SALT=aaaa&salt=bbbb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "bbbb"
+      }
+    },
+    {
+      "name": "a key whose FIRST character is '#': stripping the '#' as a fragment leaves an empty key, so a '#'-stripping sibling rejects a URN that is valid",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/#hash.md",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "#hash.md",
+        "salt": null
+      }
+    },
+    {
+      "name": "'#' and '?' in ONE key with no salt anywhere: neither is a delimiter here, so the whole remainder is the key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/notes#1?draft=yes.md",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "notes#1?draft=yes.md",
+        "salt": null
+      }
+    },
+    {
+      "name": "the leading-hex-run rule in NON-FINAL position: the value ends at the first non-hex character and the parameter continues, so the salt is 'ff' — a parser requiring the whole value to be hex reads no salt at all here",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=ffzz&x=1",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff"
+      }
+    },
+    {
       "name": "'salt=' inside ANOTHER parameter's value is not a salt parameter AND not a query marker: it must sit at a parameter boundary, so the key is preserved VERBATIM (a broader split predicate truncates a key carrying no secret at all)",
       "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?note=salt=ff00ff00",
       "expect": {
