@@ -196,3 +196,108 @@ test("parseUrn on a malformed URN throws INVALID_ARGUMENT", () => {
     (e) => isDigSdkError(e, "INVALID_ARGUMENT"),
   );
 });
+
+// ---- Error CONSTRUCTION can never throw (#2719) --------------------------------------------
+//
+// `redactContext` walks `context` recursively. 0.6.3 bounded the CYCLE case, but a deeply NESTED
+// (acyclic) context still recursed once per level and blew the stack INSIDE the `DigSdkError`
+// constructor — a `RangeError` escaping from a throw site that was itself refusing hostile input,
+// so an uncoded error escaped the whole public surface. Depth, not cycles, is the case a hostile
+// ~293 KiB JSON response actually produces.
+
+// Deeper than any host's call-stack frame budget (V8's default is ~11k frames), so an unbounded
+// recursive walk cannot survive it on any runtime this SDK supports.
+const HOSTILE_NESTING_DEPTH = 50_000;
+
+function deeplyNested(depth) {
+  let node = { leaf: true };
+  for (let i = 0; i < depth; i++) node = { a: node };
+  return node;
+}
+
+test("DigSdkError construction survives a deeply nested context (#2719)", () => {
+  const err = new DigSdkError("RPC_MALFORMED_RESPONSE", "hostile shape", {
+    rpcMethod: "dig.getContent",
+    declaredLength: deeplyNested(HOSTILE_NESTING_DEPTH),
+  });
+  // The error is fully usable: coded, serializable, and the shallow context it carries survives.
+  assert.equal(err.code, "RPC_MALFORMED_RESPONSE");
+  assert.equal(err.context.rpcMethod, "dig.getContent");
+  assert.doesNotThrow(() => JSON.stringify(err.toJSON()));
+});
+
+test("a deeply nested context is truncated, not walked to the bottom (#2719)", () => {
+  const err = new DigSdkError("RPC_MALFORMED_RESPONSE", "hostile shape", {
+    declaredLength: deeplyNested(HOSTILE_NESTING_DEPTH),
+  });
+  // Walk the surviving copy: it must bottom out in a finite number of levels. Counting the levels
+  // (rather than merely asserting construction succeeded) is what distinguishes a real depth bound
+  // from an implementation that only caught the RangeError and dropped the whole context.
+  let node = err.context.declaredLength;
+  let levels = 0;
+  while (node && typeof node === "object" && "a" in node) {
+    node = node.a;
+    levels++;
+    assert.ok(levels < 1000, "redacted context is not depth-bounded");
+  }
+  assert.ok(levels > 0, "the nested context was dropped entirely, not bounded");
+});
+
+test("a getter that throws in context cannot break error construction (#2719)", () => {
+  // `context` reaches the constructor from a throw site that may have put an attacker-controlled
+  // object in it; a throwing getter is the other way redaction itself can fail. The constructor
+  // must still produce a usable coded error.
+  const hostile = {};
+  Object.defineProperty(hostile, "boom", {
+    enumerable: true,
+    get() {
+      throw new Error("nope");
+    },
+  });
+  const err = new DigSdkError("RPC_ERROR", "m", { hostile });
+  assert.equal(err.code, "RPC_ERROR");
+  assert.doesNotThrow(() => JSON.stringify(err.toJSON()));
+});
+
+// ---------------------------------------------------------------------------------------------
+// A `__proto__`-keyed context survives redaction as ordinary data (#2719).
+//
+// The redaction copy is built with `out[k] = …`, and for `k === "__proto__"` that assignment does
+// not create a property — it invokes the setter on `Object.prototype` and replaces the COPY's
+// prototype. This is not prototype pollution (the target is a fresh object, and the subtree is
+// already redacted before assignment), but it costs two real things: the subtree vanishes from
+// `JSON.stringify`, so the diagnostics are silently lost, and a `"__proto__": null` value produces
+// a null-prototype object on which consumer code calling `sub.hasOwnProperty(...)` throws.
+// ---------------------------------------------------------------------------------------------
+
+test("a __proto__-keyed context stays serializable and pollutes nothing (#2719)", () => {
+  const context = JSON.parse(
+    '{"rpcMethod":"dig.getContent","__proto__":{"polluted":"urn?salt=ff00ff00"}}',
+  );
+  const err = new DigSdkError("RPC_MALFORMED_RESPONSE", "hostile key", context);
+
+  // The subtree is DATA: it round-trips through JSON rather than disappearing into a prototype.
+  const serialized = JSON.parse(JSON.stringify(err.context));
+  assert.equal(serialized.rpcMethod, "dig.getContent");
+  assert.deepEqual(Object.keys(serialized).sort(), ["__proto__", "rpcMethod"]);
+  // Redaction still reached inside it — being data must not mean being skipped.
+  assert.ok(!JSON.stringify(err.context).includes("ff00ff00"));
+
+  // And nothing was written through to the shared prototype, on this object or globally.
+  assert.equal(Object.getPrototypeOf(err.context), Object.prototype);
+  assert.equal({}.polluted, undefined);
+});
+
+test("a null __proto__ value leaves the redacted context usable (#2719)", () => {
+  const context = JSON.parse('{"rpcMethod":"dig.getContent","__proto__":null}');
+  const err = new DigSdkError("RPC_MALFORMED_RESPONSE", "null proto", context);
+  // The failure this pins: assigning `null` through the setter yields a null-prototype object, so
+  // ordinary consumer code touching an inherited method throws instead of reading a field.
+  assert.doesNotThrow(() =>
+    Object.prototype.hasOwnProperty.call(err.context, "rpcMethod"),
+  );
+  // Called as consumer code would — off the object, through its inherited prototype.
+  const hasOwn = err.context["hasOwnProperty"];
+  assert.equal(typeof hasOwn, "function");
+  assert.equal(hasOwn.call(err.context, "rpcMethod"), true);
+});

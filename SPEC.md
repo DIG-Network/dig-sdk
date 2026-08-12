@@ -252,14 +252,101 @@ urn:dig:chia:<store_id>[:<root>]/<resource_key>[?salt=<hex>]
   `index.html`.
 - `?salt=<hex>` carries the private-store secret salt (lowercased); absent for a public store.
 
+**Query handling (normative).** A `<resource_key>` MAY contain any character, `?` and `#` included, so
+a trailing segment is NOT assumed to be a query.
+
+**Two decisions, one parameter name, two separator sets.** A `salt=` counts only where it sits at a
+**parameter boundary**, and the boundary set depends on which decision is being made:
+
+- **Which `?` STARTS the query.** A `?` qualifies only when the text after it begins with `salt=` or
+  contains `&salt=`. A `?`-borne `salt=` MUST NOT qualify an earlier `?`: otherwise
+  `report?year=2024.csv?salt=ff00ff00` would split at its FIRST `?` and truncate a real,
+  already-published key to `report`.
+- **Where the salt sits INSIDE the chosen query.** Once a `?` has been judged to start the query,
+  every later `?` is _inside_ the query and is a separator: within that tail, `salt=` counts at the
+  start, after an `&`, **and** after a `?`. So `a?salt=zz?salt=ff00ff00` carries the salt
+  `ff00ff00` — a parser honouring only `&` here derives no salt at all and silently cannot decrypt.
+
+A parser MUST split a query off ONLY when a qualifying `?` is present; otherwise the whole
+remainder is part of `<resource_key>` and MUST be preserved verbatim. A `salt=` occurring inside another
+parameter's value is therefore neither a salt **nor** a query marker: `data?desalt=9.json`,
+`report?tag=salt=1.csv` and `secret.txt?note=salt=ff00ff00` keep their queries as part of the key.
+
+Every `?` is a split candidate, not only the first: a resource key may itself contain one, so a salt
+appended after a second `?` (`report?year=2024.csv?salt=<hex>`) is the grammar's own form and MUST be
+recognized. When more than one `?` carries a boundary `salt=`, the FIRST such `?` wins — it strips the
+most, so no later `salt=` can survive inside `<resource_key>`.
+
+When two boundary occurrences carry DIFFERENT hex values, the FIRST is the salt: `k??salt=aa11&salt=ff00`
+carries `aa11`, because the `?` beginning the chosen query's second segment is a boundary and precedes
+the `&`.
+
+`parseUrn` MUST reject a non-scalar argument (object, array, function) with a coded
+`INVALID_ARGUMENT` error BEFORE coercing it to a string, and MUST NOT place the value in the error
+context. Coercing a deeply nested array recurses and throws an uncoded `RangeError`, which would
+escape the "every failure is a coded `DigSdkError`" guarantee at the one surface a consumer runs on
+untrusted input. `isUrn` MUST return `false` for such an argument, and `redactUrnSalt` MUST remain
+total for it without constructing a `DigSdkError`.
+
+A parser MUST NOT recognize the query with a broader test than it recognizes a _qualifying_ `salt=`.
+Splitting on an unanchored `salt=` substring truncates keys that carry no salt and no secret at all, deriving a
+different retrieval key for content that is already published on chain — unreadable, and unmigratable.
+`report?year=2024.csv` and `notes#1.md` are likewise valid, working keys, and a parser that strips
+either derives a different retrieval key and cannot read already-published content.
+
+When a query IS recognized, `salt` is read as an ordinary query PARAMETER and the remainder of the
+query is discarded (no other parameter addresses a resource). The salt value MUST be resolved by these
+rules, which are a contract a second implementation is REQUIRED to match — a general-purpose
+query parser (e.g. `URLSearchParams`) does NOT satisfy them and will derive a different key:
+
+- **Any position.** `?salt=<hex>`, `?salt=<hex>&x=1` and `?x=1&salt=<hex>` all carry the salt. A
+  parser MUST NOT read `salt` in final position only: that left the secret inside `<resource_key>` —
+  both a key-derivation input and a field copied onto every returned read result — so such a URN
+  leaked the salt AND derived a key that could not decrypt anything (#2518).
+- **No percent-decoding.** The value is taken verbatim; `?salt=%61%61` is NOT the salt `aa`, it is no
+  salt at all.
+- **The parameter name is case-sensitive.** `?SALT=<hex>` is not a salt parameter.
+- **Parameter boundary required** (the rule above): within the chosen query, `salt=` counts at the
+  start, after an `&`, or after a `?`; inside another parameter's value it is not a salt.
+- **The first boundary occurrence carrying a hex value wins.** On `?salt=aaaa&salt=bbbb` the salt is
+  `aaaa`. An earlier occurrence whose value is empty or does not begin with a hex digit is skipped,
+  so `?salt=&salt=bbbb` yields `bbbb` — a parser that stops at the first occurrence unconditionally
+  derives a different key here.
+- **Empty or valueless is null.** `?salt=` and `?salt` yield `null`, never `""`. `?salt` carries no
+  `=`, so it is not a boundary `salt=` at all and the tail stays part of `<resource_key>`.
+- **The value is the leading hex run.** `?salt=ff00ff00#frag` and `?salt=ff00ff00&x=1` both yield
+  `ff00ff00`: the value ends at the first character outside `[0-9a-fA-F]`. A value with no leading hex
+  digit is not a salt (`?salt=not-hex` → `null`), and one that is only partly hex resolves to its hex
+  prefix (`?salt=ff00zz` → `ff00`). A parser that requires the WHOLE value to be hex derives a
+  different key on that last input.
+
+A value that fails these rules yields `salt: null`. The query is still split off whenever a boundary
+`salt=` is present — including for a malformed value — so a secret in an unexpected alphabet cannot
+ride along inside `<resource_key>`.
+
+The **machine-readable authority** for this behaviour is `conformance/urn-parse.json`, shipped in the
+npm package. Every implementation of this scheme MUST pass that table; agreement between parsers is
+verified against it, never asserted (the parsed `<resource_key>`/`salt` pair determines the derived
+keys, so two parsers that disagree read different bytes).
+
 **Salt redaction (normative).** The salt is the out-of-band secret that makes a store private, so it
 MUST NOT be republished by the SDK's own diagnostics. Every `DigSdkError` redacts its context when
 the error is constructed: any lowercase `salt=<value>` occurring in a string reachable from
 `context` by walking its own enumerable array elements and object properties — in a well-formed URN,
 in a malformed one, or in free text — is replaced with the literal `<redacted>` before it is stored.
-Within that reach, redaction MUST be a strict superset of what the URN grammar captures: a salt in a
-non-final position (`…?salt=<hex>&x=1`, `…?salt=<hex>#frag`) is not captured by the URN pattern and
-MUST still be redacted.
+Within that reach, redaction MUST be a strict superset of what the URN grammar captures, and MUST NOT
+be narrowed to match the parser: the strings that reach redaction are not all well-formed URNs (an
+error's `value` may be arbitrary text), so every `salt=<value>` occurrence is swept wherever it
+appears. That independence is what keeps the guarantee intact if the two ever drift apart again.
+
+**Error construction is TOTAL (normative).** Constructing a `DigSdkError` MUST NOT throw, whatever
+shape `context` has. A throw during construction happens inside a `throw new DigSdkError(...)`
+expression that no call site can wrap, so it replaces a coded, catchable refusal with an uncoded
+error escaping the whole public surface. The context walk is therefore bounded in every direction a
+hostile value can be shaped — cycles are collapsed, nesting is walked at most **32** levels deep
+(deeper values are replaced with `<omitted>`), and a property whose read throws yields `<omitted>` —
+and any residual failure degrades to a context of `{ contextRedactionFailed: true }`. Diagnostic
+detail MAY be lost; the error's `code` MUST survive.
 
 **The bounds of that guarantee (normative — do not read redaction as a blanket one).** Redaction
 covers `context`, and only in the form just described. It does NOT currently cover three cases, each
@@ -331,6 +418,49 @@ is just opaque bytes that fail to decrypt.
   response above the ceiling is refused with `RESOURCE_TOO_LARGE` and never decoded. The aggregate
   `total_length` ceiling above does not cover this case: a response may declare a tiny resource and
   still carry an arbitrarily large body.
+- **Response-body ceiling (every `dig.*` method):** the RAW body bytes of ANY single JSON-RPC
+  response are bounded at **16 MiB** while the body is being READ — the SDK streams the response and
+  refuses with `RESOURCE_TOO_LARGE` the moment the budget is exceeded, WITHOUT reading the remainder
+  and WITHOUT parsing what it read. It MUST NOT truncate-then-parse: a partial parse would either
+  fail as a spurious malformed-response fault or yield a partial result a caller would treat as
+  complete. This is the outermost of the three size bounds and the only one that limits what is ever
+  resident: the ceilings above run after parsing, so a node may declare `total_length: 100` and
+  answer with an arbitrarily large body. 16 MiB is twice the ~8 MiB a base64-encoded 6 MiB
+  per-response ciphertext ceiling implies, so every legal response fits.
+
+  A chunk's size MUST be established from the view's INTERNAL SLOTS, never from its `byteLength`,
+  `buffer` or `byteOffset` properties: a genuine `Uint8Array` subclass may override any of them while
+  satisfying `ArrayBuffer.isView`, and a chunk reporting `0` would switch the ceiling off for the
+  whole body.
+
+  A chunk MUST be refused BEFORE it is copied when its own size already exceeds the remaining
+  budget. Because the slot-derived size cannot be falsified, the ceiling does not need the copy in
+  order to be enforced — and it must not wait for it: deferring the check until after the copy makes
+  the bound "16 MiB plus one chunk", which is vacuous while nothing bounds one chunk. A single chunk
+  at the runtime's allocation limit would exhaust memory before the guard ran. For a string chunk the
+  bound is its `length`, a true LOWER bound on its UTF-8 size (at least one byte per UTF-16 code
+  unit), so refusing on it can never reject a body that would have fit.
+
+  Each accepted chunk is then copied into a buffer the SDK owns, and the COPY is what is counted and
+  retained — so a producer cannot pin memory the budget never counted, nor change what was counted
+  after the fact. A chunk whose bytes cannot be obtained — a non-view, or a detached buffer — MUST be
+  refused with `RPC_MALFORMED_RESPONSE`, never skipped.
+
+  The ceiling applies to every body the SDK can MEASURE, not only to a WHATWG stream. `fetch` is an
+  injectable option, so `res.body` may be a WHATWG `ReadableStream` (a real `fetch`; read via
+  `getReader()`) or a Node `Readable` (`node-fetch` v2, `cross-fetch`; read via `for await`) — both
+  are read under the same budget, refused with the same `RESOURCE_TOO_LARGE`, and released early. A
+  chunk whose byte length cannot be determined is refused with `RPC_MALFORMED_RESPONSE` rather than
+  accepted, because a chunk that misreports its size would otherwise disable the ceiling for the
+  remainder of the body.
+
+  **The one documented residue:** an injected `fetch` returning a body that is neither a stream nor
+  async-iterable (a fully buffered `Response` shim) cannot be measured before it is parsed. For that
+  shape the ceiling is enforced against the declared `content-length` header instead, and an absent
+  or unparseable `content-length` bypasses it for that response. This is a property of the injected
+  transport, not of the protocol: every mainstream `fetch` implementation returns one of the two
+  measurable shapes above.
+
 - **Response-shape validation:** when present, `ciphertext` MUST be a string (an absent or `null`
   `ciphertext` is read as an empty chunk). A non-string (an array, a number, a
   boolean, an object) is refused with `RPC_MALFORMED_RESPONSE` and never decoded — base64 decoding
@@ -349,7 +479,8 @@ is just opaque bytes that fail to decrypt.
 - **Strict forward progress:** while `complete` is false, each returned `next_offset` MUST be
   strictly greater than the offset just requested. A `next_offset` that repeats or rewinds the
   current offset is refused with `RPC_MALFORMED_RESPONSE`; the client MUST NOT loop on it.
-- NOTE: like the 512 MiB bound, the 6 MiB per-response ceiling, the 4096-page ceiling and the
+- NOTE: like the 512 MiB bound, the 6 MiB per-response ceiling, the 16 MiB response-body ceiling,
+  the 4096-page ceiling and the
   refusal codes attached to them are SDK-chosen client-side refusal policy. They are not normative
   wire constants negotiated with the RPC, and a second implementation is not required to match them.
 

@@ -1,0 +1,291 @@
+{
+  "$comment": [
+    "DIG URN parse conformance table — the AUTHORITY for agreement between the DIG URN parsers.",
+    "The parsed resourceKey and salt feed retrieval-key and decryption-key derivation, so two",
+    "implementations that parse one URN differently derive different keys and read different bytes.",
+    "Agreement therefore has to be verifiable, not asserted in a comment: run your parser against",
+    "this table (dig-sdk does, in test/urn-conformance.test.mjs).",
+    "",
+    "Each case is { urn, expect } where expect is either the parsed parts or { invalid: true }.",
+    "Shipped inside the npm package, so a consumer reads it from",
+    "@dignetwork/dig-sdk/conformance/urn-parse.json rather than copying it.",
+    "",
+    "Salt-parameter rules this table encodes, all normative (SPEC.md 7.1). ONE boundary rule governs",
+    "both decisions: a 'salt=' counts only at the start of the query or right after an '&', and the",
+    "query is split off ONLY when such a boundary 'salt=' is present (a '?' is legal in a resource key,",
+    "so a broader split truncates working keys). Values are NOT percent-decoded; the parameter name is",
+    "case-sensitive; the first boundary occurrence with a hex value wins; an empty or valueless salt is",
+    "null; and the value is the leading hex run."
+  ],
+  "version": 1,
+  "cases": [
+    {
+      "name": "canonical rootless form",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/index.html",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "index.html",
+        "salt": null
+      }
+    },
+    {
+      "name": "root-pinned form; the root is lowercased, the key is not",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab:CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD/img/Logo.PNG",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "resourceKey": "img/Logo.PNG",
+        "salt": null
+      }
+    },
+    {
+      "name": "salt in final position",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "salt NON-final, with a trailing parameter — the salt is still a query parameter, and the rest of the query is not part of the key (#2518)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=ff00ff00&x=1",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "salt after another parameter",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?x=1&salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "salt followed by a fragment; the fragment is part of the query tail and discarded with it",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=FF00FF00#frag",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "a store key containing a literal '#' — NOT a fragment. Only the query is stripped, so this working key keeps working",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/notes#1.md",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "notes#1.md",
+        "salt": null
+      }
+    },
+    {
+      "name": "a '#'-containing key WITH a salt: the '#' survives, the query does not",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/notes#1.md?salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "notes#1.md",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "a non-hex salt value is not a salt",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=not-hex",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": null
+      }
+    },
+    {
+      "name": "an empty resource key is not a URN; the default-view resolution happens in key derivation, not here",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/",
+      "expect": {
+        "invalid": true
+      }
+    },
+    {
+      "name": "a store id that is not 64 hex is not a URN",
+      "urn": "urn:dig:chia:abab/index.html",
+      "expect": {
+        "invalid": true
+      }
+    },
+    {
+      "name": "not a URN at all",
+      "urn": "https://example.com/index.html",
+      "expect": {
+        "invalid": true
+      }
+    },
+    {
+      "name": "a resource key containing a literal '?' and NO salt is preserved VERBATIM — it is a real working key, so the query is split off only when the query segment contains 'salt=' (#2518 reviewer finding 1)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/report?year=2024.csv",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "report?year=2024.csv",
+        "salt": null
+      }
+    },
+    {
+      "name": "the same key WITH a salt: the query does carry a salt, so it is split off",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/report?year=2024.csv&salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "report",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "percent-encoding is NOT decoded: '%61%61' is not a hex salt value, so there is no salt (a URLSearchParams-based sibling would read 'aa' here and derive a DIFFERENT key)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=%61%61",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": null
+      }
+    },
+    {
+      "name": "an EMPTY salt value is not a salt (a sibling reading '' would derive a different key)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": null
+      }
+    },
+    {
+      "name": "a valueless 'salt' (no '=') is not a salt parameter at all, so the string is not even treated as a query",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?salt",
+        "salt": null
+      }
+    },
+    {
+      "name": "FIRST occurrence wins on a duplicated parameter",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=aaaa&salt=bbbb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "aaaa"
+      }
+    },
+    {
+      "name": "the parameter name is CASE-SENSITIVE: '?SALT=' is not a salt, and the string is left verbatim",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?SALT=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?SALT=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "'salt=' inside ANOTHER parameter's value is not a salt parameter AND not a query marker: it must sit at a parameter boundary, so the key is preserved VERBATIM (a broader split predicate truncates a key carrying no secret at all)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?note=salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt?note=salt=ff00ff00",
+        "salt": null
+      }
+    },
+    {
+      "name": "the PROPERTY behind the row above, on a key that merely contains the substring 'salt=' with no parameter anywhere: a query carrying no boundary salt leaves the resource key verbatim",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/data?desalt=9.json",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "data?desalt=9.json",
+        "salt": null
+      }
+    },
+    {
+      "name": "the first boundary occurrence carrying a HEX value wins: an earlier empty one is skipped, so this is 'bbbb' (a parser that stops at the first occurrence unconditionally derives a different key)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=&salt=bbbb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "bbbb"
+      }
+    },
+    {
+      "name": "the value is the LEADING HEX RUN, ending at the first non-hex character — a parser requiring the whole value to be hex would read null here and derive a different key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/secret.txt?salt=ff00zz",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "secret.txt",
+        "salt": "ff00"
+      }
+    },
+    {
+      "name": "a '?'-containing key WITH a salt appended after a SECOND '?' — the natural way to salt such a key, and the grammar's own form. Every '?' is a split candidate, so a parser that only ever considers the FIRST one leaves the secret inside resourceKey (#2518) and derives a different key",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/report?year=2024.csv?salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "report?year=2024.csv",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "when more than one '?' carries a salt parameter the FIRST qualifying one wins, because it strips the most — splitting at the last would leave the earlier 'salt=aa' inside the resource key, which is the leak direction",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/a?salt=aa?salt=bb",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "a",
+        "salt": "aa"
+      }
+    },
+    {
+      "name": "a chosen query tail carrying a further '?'-borne salt=: once a '?' has been judged to START the query, every later '?' inside it is a separator, so the salt is read there too. Honouring only '&' inside the tail derived NO salt for this URN — silently undecryptable — while SPEC's boundary definition names it",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/a?salt=zz?salt=ff00ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "a",
+        "salt": "ff00ff00"
+      }
+    },
+    {
+      "name": "a URN whose resource key is ONLY a salt query has an empty key once the query is removed, and an empty resource key is not a URN",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/?salt=ff00ff00",
+      "expect": {
+        "invalid": true
+      }
+    },
+    {
+      "name": "two DISTINCT usable salts: the FIRST boundary occurrence wins even when a '?' introduced it and an '&' introduced the later one (published 0.6.3 read the LATER value's shape as no salt at all, so no working read changes)",
+      "urn": "urn:dig:chia:abababababababababababababababababababababababababababababababab/k??salt=aa11&salt=ff00",
+      "expect": {
+        "storeId": "abababababababababababababababababababababababababababababababab",
+        "root": null,
+        "resourceKey": "k",
+        "salt": "aa11"
+      }
+    }
+  ]
+}

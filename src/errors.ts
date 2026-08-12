@@ -137,14 +137,33 @@ export interface DigSdkErrorContext {
  */
 const DIG_SDK_ERROR_BRAND = "__dignetwork_dig_sdk_error__";
 
+/** The placeholder a context value is replaced with when it is not safely representable. */
+const OMITTED = "<omitted>";
+
+/**
+ * How many levels deep {@link redactContext} walks a `context` value before replacing the rest with
+ * {@link OMITTED}. Error context is DIAGNOSTIC — a handful of levels carries everything a human or
+ * an agent reads — while an unbounded walk recurses once per level of an attacker-shaped object.
+ * 32 is far above any context the SDK's own throw sites author and far below any host's call-stack
+ * frame budget, so the walk terminates on every runtime regardless of the input's depth (#2719).
+ */
+const MAX_CONTEXT_DEPTH = 32;
+
 /**
  * Redact any private-store salt from every string in a context value (recursively), at the SINGLE
  * point context is stored on an error. A per-call-site redaction is one a future throw site forgets;
  * doing it here means every {@link DigSdkError} — whatever its code or fields — is safe to log.
+ *
+ * Bounded in BOTH directions a hostile object can be shaped: `seen` collapses cycles, and `depth`
+ * stops a deeply nested (acyclic) object. The depth bound is the load-bearing one — a hostile RPC
+ * response is nested, not cyclic, and an unbounded walk blew the stack from INSIDE the constructor
+ * (#2719), turning a throw site that was correctly refusing hostile input into an uncoded
+ * `RangeError` escaping the SDK's whole public surface.
  */
 function redactContext<T>(
   value: T,
   seen: WeakMap<object, unknown> = new WeakMap(),
+  depth = 0,
 ): T {
   if (typeof value === "string") {
     // `redactUrnSalt` is pure and non-throwing by contract; this try/catch is a hard guarantee that
@@ -158,6 +177,7 @@ function redactContext<T>(
     }
   }
   if (value === null || typeof value !== "object") return value;
+  if (depth >= MAX_CONTEXT_DEPTH) return OMITTED as T;
   // A cyclic `context` would otherwise recurse until the stack blows — a RangeError thrown from
   // error CONSTRUCTION, outside the string-only try/catch above and outside any `catch` the throw
   // site could plausibly have (#2518). `context` is authored by SDK throw sites rather than by
@@ -169,13 +189,76 @@ function redactContext<T>(
   if (Array.isArray(value)) {
     const out: unknown[] = [];
     seen.set(value, out);
-    for (const v of value) out.push(redactContext(v, seen));
+    for (const v of value) out.push(redactContext(v, seen, depth + 1));
     return out as T;
   }
   const out: Record<string, unknown> = {};
   seen.set(value, out);
-  for (const [k, v] of Object.entries(value)) out[k] = redactContext(v, seen);
+  for (const k of ownEnumerableKeys(value)) {
+    // A property read can itself throw (an accessor on an attacker-shaped object), which would
+    // propagate out of the constructor. Read each property defensively and record the failure as a
+    // placeholder rather than losing the whole error.
+    try {
+      defineDataProperty(
+        out,
+        k,
+        redactContext((value as Record<string, unknown>)[k], seen, depth + 1),
+      );
+    } catch {
+      defineDataProperty(out, k, OMITTED);
+    }
+  }
   return out as T;
+}
+
+/**
+ * Write `value` at `key` as an ordinary own data property — never through a setter.
+ *
+ * `out[key] = value` is not an assignment for every key. `out["__proto__"]` reaches the accessor on
+ * `Object.prototype` and REPLACES the copy's prototype instead of creating a property, which loses
+ * the subtree from `JSON.stringify` (silently discarded diagnostics) and, for a `null` value, hands
+ * the consumer a null-prototype object that throws on `hasOwnProperty`. `defineProperty` writes the
+ * slot the redaction copy is supposed to have, whatever the key is called.
+ *
+ * This is not a pollution fix — the target is a fresh object and the subtree is already redacted
+ * before it is written — but a redaction pass must not be able to lose or booby-trap the diagnostics
+ * it exists to make safe.
+ */
+function defineDataProperty(
+  out: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(out, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/** Own enumerable string keys of `value`, or none if the object refuses enumeration. */
+function ownEnumerableKeys(value: object): string[] {
+  try {
+    return Object.keys(value);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Redact `context`, guaranteeing the caller gets a value back. The bounds inside
+ * {@link redactContext} already make a throw unreachable for every shape we know of; this is the
+ * last line, because a throw HERE happens during error CONSTRUCTION — inside a `throw new
+ * DigSdkError(...)` a call site cannot wrap — and would replace a coded, catchable failure with an
+ * uncoded one (#2719). Losing the diagnostic context is always the better trade.
+ */
+function safeRedactContext(context: DigSdkErrorContext): DigSdkErrorContext {
+  try {
+    return redactContext(context);
+  } catch {
+    return { contextRedactionFailed: true };
+  }
 }
 
 export class DigSdkError extends Error {
@@ -194,7 +277,7 @@ export class DigSdkError extends Error {
     this.name = "DigSdkError";
     this.code = code;
     // Redact any private-store salt from context here so no throw site can ever leak it (#2303).
-    this.context = redactContext(context);
+    this.context = safeRedactContext(context);
     // Set `cause` directly (rather than via the ES2022 Error options arg) so the lib target stays
     // ES2020 while still preserving the underlying error for diagnostics.
     if (options.cause !== undefined) {

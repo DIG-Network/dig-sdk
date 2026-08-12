@@ -1,6 +1,6 @@
 {
   "name": "@dignetwork/dig-sdk",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "The typed front door for building dapps on the DIG Network: a Chia wallet abstraction (ChiaProvider) plus DigClient read-crypto (verify + decrypt content by URN) and the canonical CHIP-0035 spend builder. ESM + CJS + .d.ts, browser + Node 18+.",
   "license": "MIT",
   "author": "DIG Network",
@@ -61,10 +61,12 @@
       "import": "./dist/next.js",
       "require": "./dist/next.cjs"
     },
+    "./conformance/urn-parse.json": "./conformance/urn-parse.json",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "conformance",
     "README.md",
     "LICENSE"
   ],

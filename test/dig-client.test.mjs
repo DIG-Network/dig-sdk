@@ -602,6 +602,43 @@ test("accepts a single response at the per-response ceiling (#2517)", async () =
   );
 });
 
+test("refuses a non-streaming response whose content-length exceeds the ceiling (#2517)", async () => {
+  // A non-streaming shim (no `body`) that declares an oversized content-length. The streaming
+  // branch never runs; the ceiling must fall back to the declared header value.
+  const root = "cd".repeat(32);
+  const oversizedLength = 17 * 1024 * 1024; // 17 MiB > 16 MiB ceiling
+  const fetchImpl = async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      headers: {
+        get: (name) =>
+          name.toLowerCase() === "content-length"
+            ? String(oversizedLength)
+            : null,
+      },
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: 100,
+            offset: 0,
+            ciphertext: "A",
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+});
+
 // A node that never completes. `advance` bytes of forward progress per page: 0 exercises the
 // strict-progress guard, 1 exercises the max-page cap (progress is real but uselessly slow).
 function mockNeverCompletingRpc(advance) {
@@ -945,4 +982,818 @@ test("ACCEPTS a chunk offset exactly equal to total_length (#2517)", async () =>
   // Resolving at all is the property: the sibling offset test proves an out-of-range offset
   // REFUSES, so only the accepting side can distinguish `at > total` from `at >= total`.
   assert.equal(res.bytes.length, 100);
+});
+
+// ---------------------------------------------------------------------------------------------
+// A hostile response shape must not escape the SDK uncoded (#2719).
+//
+// The `total_length` guard fires CORRECTLY on a non-numeric declared length and puts the offending
+// value into the error context — which, for an attacker-shaped value, is where redaction used to
+// blow the stack. This drives the end-to-end path a ~293 KiB nested JSON response produces, so it
+// fails against the unbounded redaction even though the guard itself was already right.
+// ---------------------------------------------------------------------------------------------
+
+function mockNestedTotalLengthRpc(depth) {
+  let nested = { leaf: true };
+  for (let i = 0; i < depth; i++) nested = { a: nested };
+  return async (_url, init) => {
+    if (!init || typeof init.body !== "string") return { ok: false };
+    return {
+      ok: true,
+      async json() {
+        return {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            total_length: nested,
+            offset: 0,
+            ciphertext: "",
+            inclusion_proof: "",
+            complete: true,
+          },
+        };
+      },
+    };
+  };
+}
+
+test("refuses a deeply nested total_length with a coded error, not a RangeError (#2719)", async () => {
+  const root = "cd".repeat(32);
+  const dig = new DigClient({ fetch: mockNestedTotalLengthRpc(50_000) });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The response BODY is bounded inside the shared transport (#2517).
+//
+// The per-response ciphertext ceiling runs AFTER `rpcCall` has already parsed the body, so a node
+// declaring `total_length: 100` and answering with tens of MiB was fully resident before anything
+// refused it (measured: 319 MiB RSS for a 64 MiB body). The bound therefore has to live in the
+// transport, and it has to STOP READING — not read everything and complain afterwards.
+// ---------------------------------------------------------------------------------------------
+
+// A REAL `Response` over a stream that reports how much of itself was pulled. `produced` is the
+// discriminating measurement: an implementation that buffers the whole body and then checks its
+// size passes an error-code assertion identically, and only this counter can tell them apart.
+function mockOversizedBodyRpc(totalBytes, { chunkBytes = 1 << 20 } = {}) {
+  const meter = { produced: 0 };
+  const fetchImpl = async () => {
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (meter.produced >= totalBytes) {
+          controller.close();
+          return;
+        }
+        const n = Math.min(chunkBytes, totalBytes - meter.produced);
+        meter.produced += n;
+        controller.enqueue(new Uint8Array(n).fill(0x20));
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  return { fetchImpl, meter };
+}
+
+test("refuses an oversized RPC response body and stops reading it (#2517)", async () => {
+  const root = "cd".repeat(32);
+  // 64 MiB — the size measured at 319 MiB RSS on the unbounded path, and ~4x the transport budget.
+  const { fetchImpl, meter } = mockOversizedBodyRpc(64 * 1024 * 1024);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+  // The read stopped near the budget rather than draining the body. Pinned well under the 64 MiB
+  // the mock would happily serve, so a buffer-then-check implementation fails here.
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `read did not stop early: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("the transport bound is applied to EVERY dig.* method (#2517)", async () => {
+  const calls = [
+    (dig) => dig.getCollection({ storeId: STORE }),
+    (dig) => dig.listCollectionItems({ launcherIds: [STORE] }),
+    (dig) =>
+      dig.read({
+        urn: `urn:dig:chia:${STORE}/index.html`,
+        root: "cd".repeat(32),
+      }),
+  ];
+  for (const call of calls) {
+    const { fetchImpl } = mockOversizedBodyRpc(64 * 1024 * 1024);
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(
+      () => call(dig),
+      (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+    );
+  }
+});
+
+test("a legitimate-sized response body still parses (#2517)", async () => {
+  // The bound must be picked from the protocol's own per-response ceiling, so a response carrying a
+  // full legal chunk has to pass. Without this side the budget could drift down to anything.
+  const ciphertext = new Uint8Array(3 * 1024 * 1024).fill(7);
+  const { fetchImpl } = mockCiphertextRpc(ciphertext);
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.read({
+    urn: `urn:dig:chia:${STORE}/index.html`,
+    root: "cd".repeat(32),
+  });
+  assert.equal(res.bytes.length, ciphertext.length);
+});
+
+// A NON-WHATWG body shape still gets the ceiling (#2517, adversarial-gate finding).
+//
+// `DigClientOptions.fetch` is a public, documented injection point, and the two most common Node
+// fetch implementations an embedder supplies — `node-fetch` v2 and `cross-fetch` — hand back a Node
+// `Readable` as `res.body`: truthy, NO `getReader`, and async-iterable. A chunked response from one
+// carries no `content-length` either, so before this the body reached `res.json()` completely
+// unbounded — the exact defect #2517 exists to close, silently absent for those consumers.
+function mockAsyncIterableBodyRpc(totalBytes, { chunkBytes = 1 << 20 } = {}) {
+  const meter = { produced: 0 };
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    // No `getReader` and no `content-length` — the node-fetch v2 shape exactly.
+    body: {
+      async *[Symbol.asyncIterator]() {
+        while (meter.produced < totalBytes) {
+          const n = Math.min(chunkBytes, totalBytes - meter.produced);
+          meter.produced += n;
+          yield Buffer.alloc(n, 0x20);
+        }
+      },
+    },
+    headers: { get: () => null },
+    json: async () => {
+      throw new Error("res.json() must not be reached: the body is measurable");
+    },
+  });
+  return { fetchImpl, meter };
+}
+
+test("bounds an async-iterable (node-fetch v2 shaped) response body (#2517)", async () => {
+  const { fetchImpl, meter } = mockAsyncIterableBodyRpc(64 * 1024 * 1024);
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () =>
+      dig.read({
+        urn: `urn:dig:chia:${STORE}/index.html`,
+        root: "cd".repeat(32),
+      }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+  // Measure the PULL, not just the code: a buffer-then-check implementation returns the same error
+  // after draining all 64 MiB, which is the resource exhaustion the ceiling exists to prevent.
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `read did not stop early: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a legal async-iterable response still parses — the bound is not a blanket refusal (#2517)", async () => {
+  // The control. Without it, a fix that simply refused every non-WHATWG body would pass the test
+  // above while breaking every `node-fetch` consumer.
+  const payload = Buffer.from(
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { items: [], total: 0 } }),
+  );
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      async *[Symbol.asyncIterator]() {
+        // Split mid-payload, so a per-chunk decode bug would corrupt the parse.
+        yield payload.subarray(0, 7);
+        yield payload.subarray(7);
+      },
+    },
+    headers: { get: () => null },
+    json: async () => {
+      throw new Error("res.json() must not be reached: the body is measurable");
+    },
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.listCollectionItems({
+    storeId: STORE,
+    collection: "c",
+  });
+  assert.deepEqual(res.items, []);
+});
+
+test("refuses an unmeasurable stream chunk rather than failing open (#2517)", async () => {
+  // `read += undefined` is NaN and `NaN > MAX` is FALSE, so one unmeasurable chunk would silently
+  // disable the ceiling for the rest of the body. A size guard must fail CLOSED on a shape it
+  // cannot account for.
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield { not: "bytes" };
+      },
+    },
+    headers: { get: () => null },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    // Discriminate on the MESSAGE, not the code. `RPC_MALFORMED_RESPONSE` is also what a plain
+    // JSON-parse failure raises, so an implementation that let the chunk through and then failed to
+    // parse it would satisfy a code-only assertion while the ceiling was off.
+    (e) =>
+      e instanceof DigSdkError &&
+      e.code === "RPC_MALFORMED_RESPONSE" &&
+      /cannot be bounded/.test(e.message),
+  );
+});
+
+test("a chunk that FORGES Uint8Array's prototype cannot disable the ceiling (#2517)", async () => {
+  // `instanceof Uint8Array` is a prototype-chain check, so `Object.create(Uint8Array.prototype)`
+  // with a poisoned `byteLength` satisfies it. A size guard that trusts such a chunk adds NaN (or a
+  // negative number) to its counter, and `NaN > MAX` is false — the ceiling is then off for the
+  // whole rest of the body. The poisoned chunk goes FIRST, followed by 64 MiB of real buffers.
+  //
+  // Asserting on the error code alone would NOT catch a bypass here: the body that gets through is
+  // not valid JSON, so a bypass also throws `RPC_MALFORMED_RESPONSE`. The discriminating assertion
+  // is how many bytes were pulled.
+  for (const poison of [NaN, -1e9, "1"]) {
+    const meter = { produced: 0 };
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        async *[Symbol.asyncIterator]() {
+          const fake = Object.create(Uint8Array.prototype);
+          Object.defineProperty(fake, "byteLength", { get: () => poison });
+          yield fake;
+          while (meter.produced < 64 * 1024 * 1024) {
+            meter.produced += 1 << 20;
+            yield Buffer.alloc(1 << 20, 0x20);
+          }
+        },
+      },
+      headers: { get: () => null },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    });
+    const dig = new DigClient({ fetch: fetchImpl });
+    await assert.rejects(() =>
+      dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    );
+    assert.ok(
+      meter.produced < 32 * 1024 * 1024,
+      `byteLength=${poison} disabled the ceiling: pulled ${meter.produced} bytes`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// A nested ARRAY in any coerced response field is an UNCATCHABLE crash, not a coded refusal (#2719).
+//
+// Coercing a deeply nested array — `Number(v)`, `v >>> 0`, `String(v)`, template interpolation —
+// invokes `Array.prototype.join`, which recurses once per nesting level and throws a raw
+// `RangeError`. For the `offset` guard the coercion happens while EVALUATING THE ARGUMENTS to
+// `throw new DigSdkError(...)`, so neither the constructor's own depth bound nor any `catch` in the
+// read path can see it.
+//
+// The fixtures go over the REAL wire: the body is a JSON string parsed by the transport, not an
+// object handed back by an injected `json()`. An injected object skips the parse and cannot
+// reproduce a hostile shape a real node can actually send. ~117 KiB produces 60000 levels.
+// ---------------------------------------------------------------------------------------------
+
+/** A 60000-deep JSON array literal — built as TEXT, so no helper recurses building it. */
+function deepArrayJson(depth = 60_000) {
+  return "[".repeat(depth) + "0" + "]".repeat(depth);
+}
+
+/** A `fetch` answering every RPC with `bodyJson`, delivered as a real streamed `Response`. */
+function jsonWireRpc(bodyJson) {
+  return async () =>
+    new Response(bodyJson, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+}
+
+/** `dig.getContent` result fields, JSON-encoded, with `overrides` spliced in verbatim as text. */
+function contentResultWire(overrides) {
+  const base = {
+    total_length: 0,
+    offset: 0,
+    ciphertext: "",
+    inclusion_proof: "",
+    complete: true,
+  };
+  const fields = Object.entries(base)
+    .filter(([k]) => !(k in overrides))
+    .map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`);
+  for (const [k, raw] of Object.entries(overrides)) {
+    fields.push(`${JSON.stringify(k)}:${raw}`);
+  }
+  return `{"jsonrpc":"2.0","id":1,"result":{${fields.join(",")}}}`;
+}
+
+const NESTED_ARRAY_CASES = [
+  ["total_length", () => contentResultWire({ total_length: deepArrayJson() })],
+  [
+    "chunk_lens element",
+    () => contentResultWire({ chunk_lens: `[${deepArrayJson()}]` }),
+  ],
+  ["offset", () => contentResultWire({ offset: deepArrayJson() })],
+  [
+    "next_offset",
+    () =>
+      contentResultWire({
+        total_length: "4",
+        ciphertext: '"AAAA"',
+        complete: "false",
+        next_offset: deepArrayJson(),
+      }),
+  ],
+];
+
+for (const [field, makeBody] of NESTED_ARRAY_CASES) {
+  test(`a nested ARRAY in ${field} is refused with a coded error, not a RangeError (#2719)`, async () => {
+    const root = "cd".repeat(32);
+    const dig = new DigClient({ fetch: jsonWireRpc(makeBody()) });
+    await assert.rejects(
+      () => dig.read({ urn: `urn:dig:chia:${STORE}/index.html`, root }),
+      (e) => e instanceof DigSdkError && e.code === "RPC_MALFORMED_RESPONSE",
+      `${field} escaped as an uncoded error`,
+    );
+  });
+}
+
+test("a nested ARRAY in a JSON-RPC error message is refused with a coded error (#2719)", async () => {
+  const dig = new DigClient({
+    fetch: jsonWireRpc(
+      `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":${deepArrayJson()}}}`,
+    ),
+  });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError && typeof e.code === "string",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The WHATWG reader loop must measure chunks by the SAME rule the async-iterable loop uses (#2719).
+//
+// `res.body` is TYPED `ReadableStream<Uint8Array>`, but `fetch` is a public injection point and
+// `ReadableStream` is generic, so a shim enqueueing strings has `getReader` and lands in this loop.
+// `"…".byteLength` is `undefined`, `read += undefined` is NaN, and `NaN > MAX` is false — the
+// ceiling is then off for the whole body. Measured before the fix: the reader path pulled all
+// 64 MiB while the async-iterable path stopped at 17 MiB.
+//
+// An error-code assertion alone does NOT discriminate: the unbounded path also throws, because the
+// accumulated garbage fails to parse — and `asBytes`'s refusal shares that same
+// `RPC_MALFORMED_RESPONSE` code. Only BYTES PULLED tells a fired ceiling from a drained body.
+// ---------------------------------------------------------------------------------------------
+
+test("a getReader stream of STRING chunks cannot disable the response ceiling (#2719)", async () => {
+  const meter = { produced: 0 };
+  const total = 64 * 1024 * 1024;
+  const chunk = " ".repeat(1 << 20);
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (meter.produced >= total)
+              return { done: true, value: undefined };
+            meter.produced += chunk.length;
+            return { done: false, value: chunk };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(() =>
+    dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `the reader path drained ${meter.produced} of ${total} bytes: the ceiling never fired`,
+  );
+});
+
+test("a getReader stream chunk that is not bytes is refused, not silently skipped (#2719)", async () => {
+  const chunks = [{ nope: true }];
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            return chunks.length
+              ? { done: false, value: chunks.pop() }
+              : { done: true, value: undefined };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+  const dig = new DigClient({ fetch: fetchImpl });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) =>
+      e instanceof DigSdkError &&
+      e.code === "RPC_MALFORMED_RESPONSE" &&
+      /cannot be bounded/.test(e.message),
+  );
+});
+
+test("a retained chunk is COPIED, not a view aliasing the producer's buffer (#2517)", async () => {
+  // The budget counts a chunk's VIEW length but was retaining the view, which pins the producer's
+  // whole `ArrayBuffer`. Measured before the fix: 48 counted bytes held 1,536 MiB resident and the
+  // read SUCCEEDED, because the 16 MiB ceiling was never approached. Amplification is
+  // `backing / counted`, and the budget permits ~16.7M one-byte chunks.
+  //
+  // Asserting on RSS would be flaky and GC-dependent. Aliasing is instead detected DIRECTLY and
+  // deterministically: the producer overwrites the bytes behind an already-yielded chunk before
+  // yielding the next one. An implementation that retained the view sees the mutated bytes and
+  // fails to parse; one that copied is unaffected.
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { items: [], total: 0 },
+  });
+  const backing = new Uint8Array(1024);
+  const split = 7;
+  const head = Buffer.from(payload.slice(0, split));
+  const tail = Buffer.from(payload.slice(split));
+  backing.set(head, 0);
+
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield backing.subarray(0, head.length);
+        // Scribble over the region the first chunk viewed. Only an aliasing implementation notices.
+        backing.fill(0x58, 0, head.length);
+        yield tail;
+      },
+    },
+    json: async () => {
+      throw new Error("res.json() must not be reached: the body is measurable");
+    },
+  });
+
+  const dig = new DigClient({ fetch: fetchImpl });
+  const res = await dig.listCollectionItems({
+    storeId: STORE,
+    collection: "c",
+  });
+  assert.deepEqual(res.items, []);
+});
+
+// ---------------------------------------------------------------------------------------------
+// A GENUINE `Uint8Array` subclass can lie about its own size (#2719).
+//
+// `ArrayBuffer.isView` interrogates an internal slot, so it cannot be fooled by a fake object — but
+// it was never the thing that had to be trustworthy. The SIZE was, and `value.byteLength` is an
+// ordinary property lookup a subclass may override while every internal slot stays genuine:
+//
+//     class Evil extends Uint8Array { get byteLength() { return 0; } }
+//
+// Measured at f0e3906: 4.00 GiB drained against the 16 MiB ceiling in 83 ms with 0 counted bytes,
+// and an unbounded stream of such chunks never terminated.
+//
+// The structural answer is not a fourth point fix. All three defects in this budget — NaN
+// `byteLength`, a forged prototype, an aliased buffer — share one root: the budget measured a value
+// the PRODUCER still owned. The order is inverted (normalize into a buffer we own, THEN measure our
+// copy), so the class stops being expressible.
+//
+// The discriminating assertion is BYTES PULLED, not the error code: a bypass here also fails to
+// parse and also raises `RPC_MALFORMED_RESPONSE`.
+// ---------------------------------------------------------------------------------------------
+
+/** A `fetch` yielding `firstChunk()` once, then real 1 MiB buffers until `cap`, metering as it goes. */
+function meteredChunkFetch(firstChunk, meter, cap = 64 * 1024 * 1024) {
+  return async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: {
+      async *[Symbol.asyncIterator]() {
+        yield firstChunk();
+        while (meter.produced < cap) {
+          meter.produced += 1 << 20;
+          yield Buffer.alloc(1 << 20, 0x20);
+        }
+      },
+    },
+    json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+  });
+}
+
+class LyingLength extends Uint8Array {
+  get byteLength() {
+    return 0;
+  }
+}
+
+test("a genuine Uint8Array SUBCLASS that lies about byteLength cannot disable the ceiling (#2719)", async () => {
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: meteredChunkFetch(() => new LyingLength(1024), meter),
+  });
+  // The refusal must be CODED. `assert.rejects` alone is satisfied by a raw `RangeError` thrown
+  // while constructing a view over a poisoned buffer, which is a crash, not a guard.
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError,
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `a lying subclass disabled the ceiling: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a stream of nothing but lying chunks still terminates on the ceiling (#2719)", async () => {
+  // The test above proves the ceiling still fires when honest chunks follow. This proves the COUNT
+  // is truthful: with every chunk reporting 0, a budget that trusts the report never terminates.
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            meter.produced += 1 << 20;
+            if (meter.produced > 256 * 1024 * 1024) {
+              throw new Error("the ceiling never fired on lying chunks");
+            }
+            yield new LyingLength(1 << 20);
+          }
+        },
+      },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    }),
+  });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE",
+  );
+  assert.ok(
+    meter.produced <= 32 * 1024 * 1024,
+    `counted far too little before refusing: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a subclass lying about buffer/byteOffset cannot smuggle bytes past the count (#2719)", async () => {
+  // `byteLength` is not the only poisonable accessor: `buffer` and `byteOffset` are read the same
+  // way, so reading internal slots must make all three untrusted.
+  class LyingWindow extends Uint8Array {
+    get byteOffset() {
+      return 0;
+    }
+    get buffer() {
+      return new ArrayBuffer(8);
+    }
+  }
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: meteredChunkFetch(() => new LyingWindow(1024), meter),
+  });
+  // The refusal must be CODED. `assert.rejects` alone is satisfied by a raw `RangeError` thrown
+  // while constructing a view over a poisoned buffer, which is a crash, not a guard.
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError,
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `poisoned buffer/byteOffset disabled the ceiling: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("a detached chunk buffer is refused with a coded error (#2719)", async () => {
+  const dig = new DigClient({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          const buf = new ArrayBuffer(64);
+          const view = new Uint8Array(buf);
+          structuredClone(buf, { transfer: [buf] }); // detaches `buf`
+          yield view;
+        },
+      },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    }),
+  });
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) =>
+      e instanceof DigSdkError &&
+      e.code === "RPC_MALFORMED_RESPONSE" &&
+      /cannot be bounded/.test(e.message),
+  );
+});
+
+test("a Proxy over a Buffer cannot be counted as zero while its content is kept (#2719)", async () => {
+  const meter = { produced: 0 };
+  const dig = new DigClient({
+    fetch: meteredChunkFetch(
+      () =>
+        new Proxy(Buffer.alloc(1024), {
+          get: (t, p) => (p === "byteLength" ? 0 : Reflect.get(t, p)),
+        }),
+      meter,
+    ),
+  });
+  // The refusal must be CODED. `assert.rejects` alone is satisfied by a raw `RangeError` thrown
+  // while constructing a view over a poisoned buffer, which is a crash, not a guard.
+  await assert.rejects(
+    () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+    (e) => e instanceof DigSdkError,
+  );
+  assert.ok(
+    meter.produced < 32 * 1024 * 1024,
+    `a proxied chunk disabled the ceiling: pulled ${meter.produced} bytes`,
+  );
+});
+
+test("legitimate chunk shapes are still accepted after the inversion (#2719)", async () => {
+  // The refusal must not widen. `Buffer` is itself a `Uint8Array` subclass (it simply does not lie),
+  // and `DataView`, SAB-backed views, empty chunks, split views and strings are all legal body
+  // shapes a real embedder produces.
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { items: [], total: 0 },
+  });
+  const bytes = new TextEncoder().encode(payload);
+  const sab = new SharedArrayBuffer(bytes.length);
+  new Uint8Array(sab).set(bytes);
+
+  const shapes = {
+    Buffer: () => [Buffer.from(payload)],
+    DataView: () => [new DataView(bytes.slice().buffer)],
+    "SharedArrayBuffer-backed view": () => [new Uint8Array(sab)],
+    string: () => [payload],
+    "empty chunks interleaved": () => [
+      new Uint8Array(0),
+      Buffer.from(payload),
+      new Uint8Array(0),
+    ],
+    "split across offset views": () => [
+      bytes.subarray(0, 5),
+      bytes.subarray(5),
+    ],
+  };
+  for (const [label, make] of Object.entries(shapes)) {
+    const dig = new DigClient({
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        body: {
+          async *[Symbol.asyncIterator]() {
+            for (const c of make()) yield c;
+          },
+        },
+        json: async () => {
+          throw new Error("res.json() must not be reached");
+        },
+      }),
+    });
+    const res = await dig.listCollectionItems({
+      storeId: STORE,
+      collection: "c",
+    });
+    assert.deepEqual(res.items, [], `${label} was not accepted`);
+  }
+});
+
+test("an oversized chunk is refused BEFORE it is copied (#2517)", async () => {
+  // "MAX + one chunk" is a vacuous bound when nothing bounds one chunk. With the pre-copy check
+  // absent, the whole chunk was copied and only then refused: measured 256 MiB -> 512 MiB resident,
+  // 1 GiB -> 2 GiB, 2 GiB -> 4 GiB. One chunk at V8's ArrayBuffer limit OOMs the process before the
+  // guard runs — a remote OOM from the §5.3 default local node.
+  //
+  // Measure `arrayBuffers` AT THE THROW, before the copy can be collected: a copy that happened is
+  // still resident there. Asserting the error code alone cannot see this — the refusal fires either
+  // way, just too late.
+  const CHUNK = 64 * 1024 * 1024;
+  for (const kind of ["view", "string"]) {
+    let atThrow = null;
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          yield kind === "string"
+            ? " ".repeat(CHUNK)
+            : new Uint8Array(CHUNK).fill(0x20);
+        },
+      },
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: {} }),
+    });
+    // Count bytes ACTUALLY ALLOCATED by instrumenting the two allocation sites, rather than
+    // sampling `memoryUsage()` — a heap sample depends on GC timing, and this must not be able to
+    // pass for the wrong reason on a busy CI box.
+    const realSlice = Uint8Array.prototype.slice;
+    const realEncode = TextEncoder.prototype.encode;
+    let allocated = 0;
+    Uint8Array.prototype.slice = function (...args) {
+      const out = realSlice.apply(this, args);
+      allocated += out.byteLength;
+      return out;
+    };
+    TextEncoder.prototype.encode = function (...args) {
+      const out = realEncode.apply(this, args);
+      allocated += out.byteLength;
+      return out;
+    };
+    const dig = new DigClient({ fetch: fetchImpl });
+    try {
+      await assert.rejects(
+        () => dig.listCollectionItems({ storeId: STORE, collection: "c" }),
+        (e) => {
+          atThrow = process.memoryUsage().arrayBuffers;
+          return e instanceof DigSdkError && e.code === "RESOURCE_TOO_LARGE";
+        },
+      );
+    } finally {
+      Uint8Array.prototype.slice = realSlice;
+      TextEncoder.prototype.encode = realEncode;
+    }
+    // The load-bearing assertion. `RESOURCE_TOO_LARGE` is raised either way, so the error code
+    // cannot distinguish a pre-copy refusal from a post-copy one; only the allocation can.
+    assert.ok(
+      allocated < CHUNK,
+      `${kind}: ${Math.round(allocated / 1048576)} MiB was allocated before the refusal`,
+    );
+    assert.ok(
+      atThrow < CHUNK * 1.5,
+      `${kind}: chunk was copied before refusal (${Math.round(atThrow / 1048576)} MiB resident at throw)`,
+    );
+  }
+});
+
+test("the pre-copy bound never refuses a body that would have fit (#2517)", async () => {
+  // The control for the check above. The string leg refuses on `length`, a LOWER bound on the UTF-8
+  // size — which is why it must be `length` and not a `length * 3` upper bound: a 6 MiB ASCII body
+  // would otherwise be rejected as though it were 18 MiB. Non-ASCII is the case that proves the
+  // bound is a lower one: 'é' is one UTF-16 code unit and two UTF-8 bytes.
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { items: [], total: 0 },
+  });
+  for (const kind of ["view", "string", "accented"]) {
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        async *[Symbol.asyncIterator]() {
+          // A megabyte of legal leading whitespace, then the payload — comfortably inside the
+          // budget on every leg, including the one whose bytes exceed its code-unit count.
+          if (kind === "view") yield new Uint8Array(1 << 20).fill(0x20);
+          else if (kind === "string") yield " ".repeat(1 << 20);
+          else yield "é".repeat(1 << 19).replace(/é/g, " ");
+          yield Buffer.from(payload);
+        },
+      },
+      json: async () => {
+        throw new Error(
+          "res.json() must not be reached: the body is measurable",
+        );
+      },
+    });
+    const dig = new DigClient({ fetch: fetchImpl });
+    const res = await dig.listCollectionItems({
+      storeId: STORE,
+      collection: "c",
+    });
+    assert.deepEqual(res.items, [], `${kind} was refused but should have fit`);
+  }
 });

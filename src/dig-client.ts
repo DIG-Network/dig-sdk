@@ -29,6 +29,7 @@ import { loadDigClientWasm } from "./loader.js";
 import type { DigClientWasm } from "./wasm.js";
 import { parseUrn } from "./urn.js";
 import { b64ToBytes } from "./hex.js";
+import { isNonScalar, nonScalarTypeName } from "./coercion.js";
 import type {
   CollectionItemsPage,
   CollectionMeta,
@@ -36,7 +37,7 @@ import type {
   ReadResult,
   UrnKeys,
 } from "./types.js";
-import { DigSdkError } from "./errors.js";
+import { DigSdkError, isDigSdkError } from "./errors.js";
 import {
   DEFAULT_PROBE_TIMEOUT_MS,
   GATEWAY_URL,
@@ -73,12 +74,10 @@ const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 // reassembly buffer but says nothing about one response, so an untrusted node could declare a
 // 100-byte resource and answer with hundreds of megabytes.
 //
-// Be precise about WHAT this bounds. `rpcCall` already did `await res.json()`, so the hostile body
-// has been read and parsed: the base64 string (~1.33x the ciphertext) is resident before this check
-// runs. What the check prevents is the ADDITIONAL decoded `Uint8Array` — roughly the smaller half of
-// the cost. Bounding the response body itself belongs in `rpcCall` (a streaming/size-limited read)
-// and is deliberately deferred to its own change, since it has its own blast radius across every
-// `dig.*` method.
+// Be precise about WHAT this bounds: only the DECODED `Uint8Array`. The base64 string it decodes
+// from is already resident, because `rpcCall` parsed the body first. The body itself is bounded one
+// layer down by MAX_RPC_RESPONSE_BYTES below, which `rpcCall` enforces while STREAMING — so the two
+// ceilings compose: the transport caps what is ever read, this caps what is then allocated.
 //
 // The client ASKS for `RPC_CHUNK_BYTES`, so a conforming node never exceeds it and the honest
 // bound is 3 MiB. Doubling it is deliberate slack in the SAFE direction: refusing content a
@@ -87,6 +86,19 @@ const MAX_RESOURCE_BYTES = 512 * 1024 * 1024;
 // more per response is misbehaving by its own protocol.
 const MAX_RESPONSE_CIPHERTEXT_BYTES = 2 * RPC_CHUNK_BYTES;
 
+// Ceiling on the RAW BODY BYTES any single `dig.*` response may carry, enforced WHILE STREAMING the
+// body — before the whole thing is resident and before it is parsed (#2517). This is the bound the
+// per-response ciphertext ceiling above could not provide: that check runs after `rpcCall` has
+// already parsed the body, so a node declaring `total_length: 100` and answering with 64 MiB cost
+// 319 MiB RSS before anything refused it.
+//
+// Derived from the protocol's own per-response limit rather than picked: the largest LEGAL response
+// carries MAX_RESPONSE_CIPHERTEXT_BYTES (6 MiB) of ciphertext, which is ~8 MiB once base64-encoded,
+// plus an inclusion proof and JSON scaffolding. 16 MiB is 2x that — ample slack for a conforming
+// node, ~30x below the RSS an unbounded read reached, and small enough that repeated hostile
+// responses cannot exhaust a tab.
+const MAX_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
+
 // Ceiling on how many `dig.getContent` pages one resource may take (#2517). The strict
 // forward-progress check below already stops a node that repeats an offset forever; this bounds
 // the remaining spin — a node that advances by a single byte per page would otherwise make half a
@@ -94,6 +106,42 @@ const MAX_RESPONSE_CIPHERTEXT_BYTES = 2 * RPC_CHUNK_BYTES;
 // resource needs 171 pages, so 4096 tolerates a node chunking 24x finer than asked before it is
 // treated as hostile: generous to slow-but-honest nodes, still a hard bound.
 const MAX_CONTENT_PAGES = 4096;
+
+/**
+ * Refuse a response field that cannot be COERCED safely, before anything coerces it.
+ *
+ * `JSON.parse` can hand back an arbitrarily nested array or object, and every coercion this module
+ * performs on a response field — `Number(v)`, `v >>> 0`, `String(v)`, template interpolation —
+ * reaches `Array.prototype.join` / `Object.prototype.toString`, which recurse once per nesting level
+ * and throw a raw `RangeError` (measured: a 117 KiB body nested 60000 deep). That is not a survivable
+ * failure. For the `offset` guard the coercion happens while evaluating the ARGUMENTS to
+ * `throw new DigSdkError(...)`, so it escapes both the error constructor's own depth bound and every
+ * `catch` on the read path, and aborts the consumer's process (#2719).
+ *
+ * One shared helper on purpose: a sixth coercion site added later cannot silently reopen the hole,
+ * because the refusal is the thing every site calls rather than a pattern each site re-implements.
+ *
+ * It refuses exactly the shapes that can RECURSE — objects, arrays, functions — and deliberately not
+ * "everything that is not a number". A numeric string coerces in constant time and is accepted today,
+ * so narrowing to `typeof === "number"` would be an unrequested behaviour change; the numeric
+ * validation that follows each call site remains the judge of whether the value is usable.
+ *
+ * Only the value's TYPE goes into the error context, never the value: putting the hostile value there
+ * hands it straight back to the redaction walk this exists to keep it away from.
+ */
+function assertCoercible(v: unknown, field: string, method: string): void {
+  if (isNonScalar(v)) {
+    throw new DigSdkError(
+      "RPC_MALFORMED_RESPONSE",
+      `The content network returned a non-scalar ${field}, which cannot be read as a value.`,
+      {
+        rpcMethod: method,
+        field,
+        valueType: nonScalarTypeName(v),
+      },
+    );
+  }
+}
 
 /** Options to construct a DigClient. */
 export interface DigClientOptions {
@@ -533,6 +581,7 @@ export class DigClient {
       if (total === null) {
         // Bound the UNTRUSTED declared length against the protocol ceiling BEFORE allocating. Check
         // the raw number (not `>>> 0`, which would wrap a >2^32 value down under the ceiling).
+        assertCoercible(r.total_length, "total_length", "dig.getContent");
         const declared = Number(r.total_length);
         if (!Number.isFinite(declared) || declared < 0) {
           throw new DigSdkError(
@@ -567,7 +616,10 @@ export class DigClient {
         }
       }
       if (chunkLens === null && Array.isArray(r.chunk_lens)) {
-        chunkLens = r.chunk_lens.map((n) => n >>> 0);
+        chunkLens = r.chunk_lens.map((n) => {
+          assertCoercible(n, "chunk_lens entry", "dig.getContent");
+          return n >>> 0;
+        });
       }
       const b64 = r.ciphertext ?? "";
       // The ceiling below measures `b64.length`, so it is only a bound if `b64` IS a string.
@@ -620,6 +672,7 @@ export class DigClient {
       // as an uncoded error, breaking the SDK's contract that every failure it surfaces is a
       // `DigSdkError`. `>>> 0` cannot substitute for this: it silently wraps a huge or negative
       // offset into a plausible one rather than refusing it.
+      assertCoercible(r.offset, "offset", "dig.getContent");
       const at = r.offset;
       if (!Number.isInteger(at) || at < 0 || at > total) {
         throw new DigSdkError(
@@ -642,6 +695,7 @@ export class DigClient {
       // `complete: false` would otherwise spin the client forever on a well-formed-looking reply
       // (#2517) — the cheapest possible hang, and the §5.3 ladder makes an unauthenticated local
       // node the default endpoint for a Node consumer.
+      assertCoercible(r.next_offset, "next_offset", "dig.getContent");
       const next = r.next_offset >>> 0;
       if (next <= offset) {
         throw new DigSdkError(
@@ -694,8 +748,10 @@ export class DigClient {
       error?: { message?: string; code?: number };
     };
     try {
-      json = (await res.json()) as typeof json;
+      json = await readBoundedJson<typeof json>(res, method);
     } catch (cause) {
+      // The size refusal is already a coded verdict; only a PARSE failure needs wrapping.
+      if (isDigSdkError(cause)) throw cause;
       throw new DigSdkError(
         "RPC_MALFORMED_RESPONSE",
         `dig RPC ${method} returned a body that is not valid JSON.`,
@@ -703,12 +759,14 @@ export class DigClient {
         { cause },
       );
     }
-    if (json && json.error)
+    if (json && json.error) {
+      assertCoercible(json.error.message, "error.message", method);
       throw new DigSdkError(
         "RPC_ERROR",
         `dig RPC ${method}: ${json.error.message ?? "error"}`,
         { rpcMethod: method, rpcCode: json.error.code },
       );
+    }
     return json ? (json.result ?? null) : null;
   }
 }
@@ -716,6 +774,337 @@ export class DigClient {
 // AES-256-GCM-SIV-open a resource's served ciphertext under `keyHex`, splitting the PLAIN-
 // concatenated chunk ciphertexts by `chunkLens` (per-chunk CIPHERTEXT byte lengths) and opening
 // each. Empty/absent chunkLens ⇒ single-chunk resource. Throws if any chunk's tag fails.
+// Read a JSON-RPC response body with a HARD byte budget, then parse it.
+//
+// Reads the body as a STREAM and refuses the moment it exceeds {@link MAX_RPC_RESPONSE_BYTES}, so an
+// untrusted node (the §5.3 ladder makes an unauthenticated local node the default endpoint) cannot
+// make the client resident-allocate an unbounded body just by answering a request (#2517).
+//
+// It THROWS rather than truncating on purpose: a truncated body would either fail to parse — an
+// unexplained "malformed response" for what is really a size refusal — or, worse, parse into a
+// partial result the caller would treat as complete. Silent corruption is the failure mode a size
+// limit must not introduce.
+//
+// A response with no readable stream (a non-streaming `Response` shim) falls back to the platform
+// parse, which is why the budget lives here and not in a caller: every `dig.*` method shares it.
+async function readBoundedJson<T>(res: Response, method: string): Promise<T> {
+  const body: ReadableStream<Uint8Array> | null | undefined = res.body;
+  if (!body || typeof body.getReader !== "function") {
+    // A Node `Readable` — what `node-fetch` v2, `cross-fetch` and the record/replay doubles built on
+    // them hand back — is truthy and has NO `getReader`, but it IS async-iterable, so it can be
+    // measured. It must be: `DigClientOptions.fetch` is a public, documented injection point, so this
+    // is the most common non-WHATWG shape a real embedder supplies, and falling through to
+    // `res.json()` would leave it with exactly the unbounded read this ceiling exists to close
+    // (#2517) — silently, since a chunked response carries no `content-length` either. Only a body
+    // that cannot be iterated AT ALL reaches the platform parse below.
+    if (isAsyncIterable(body)) {
+      return JSON.parse(
+        new TextDecoder().decode(await readBudgeted(body, res, method)),
+      ) as T;
+    }
+    const declared = declaredContentLength(res);
+    if (declared !== null && declared > MAX_RPC_RESPONSE_BYTES) {
+      throw tooLargeError(
+        res,
+        method,
+        `declared content-length ${declared} bytes, which exceeds the ${MAX_RPC_RESPONSE_BYTES}-byte ceiling.`,
+      );
+    }
+    return (await res.json()) as T;
+  }
+  const reader = body.getReader();
+  const budget = new ChunkBudget(res, method);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      budget.accept(value);
+    }
+  } finally {
+    // Release the connection whether we finished or bailed out mid-body; a hostile node that never
+    // ends its stream must not leave a socket held open.
+    try {
+      await reader.cancel();
+    } catch {
+      /* the stream is already closed or errored — nothing to release */
+    }
+  }
+  return JSON.parse(new TextDecoder().decode(budget.finish())) as T;
+}
+
+/**
+ * The ONE per-chunk accounting rule, shared by both body loops.
+ *
+ * The two loops enforced the same ceiling with two copies of the arithmetic, and they diverged: the
+ * WHATWG loop trusted `value.byteLength` because `res.body` is TYPED `ReadableStream<Uint8Array>`.
+ * That type is an annotation, not a runtime guarantee — `fetch` is a public injection point and
+ * `ReadableStream` is generic, so a shim enqueueing strings lands there with `byteLength ===
+ * undefined`. `read += undefined` is NaN and `NaN > MAX` is false, which switched the ceiling off for
+ * the rest of the body: measured, that path drained all 64 MiB of a hostile response while the
+ * async-iterable path stopped at 17 MiB (#2719).
+ *
+ * Sharing the accounting — not merely the ceiling constant and the refusal — is what stops the two
+ * paths drifting apart a second time.
+ */
+class ChunkBudget {
+  private readonly chunks: Uint8Array[] = [];
+  private read = 0;
+
+  constructor(
+    private readonly res: Response,
+    private readonly method: string,
+  ) {}
+
+  /**
+   * Measure and keep one chunk. Refuses a chunk whose size cannot be established — including an
+   * ABSENT one, which the reader loop used to skip: a shim yielding `{ done: false, value:
+   * undefined }` forever would otherwise spin the loop with nothing counting it. Refuses the whole
+   * body once the running total passes the ceiling. An empty chunk is kept out of the buffer list
+   * but is not an error; a real stream may legitimately emit one.
+   */
+  accept(value: unknown): void {
+    // NORMALIZE FIRST, MEASURE SECOND. The three defects this budget has now had — a NaN
+    // `byteLength`, a forged prototype, a retained view aliasing the producer's buffer — were one
+    // defect: the budget measured a number the PRODUCER still owned. `copyChunkBytes` returns bytes
+    // in a buffer WE allocated, so the length measured below is a fact about our own memory and the
+    // whole class stops being expressible rather than needing a fourth point fix.
+    // REFUSE BEFORE COPYING when the chunk's own size already blows the budget. `viewSlots` yields
+    // a size the producer CANNOT falsify, so the ceiling does not have to wait for the copy — and
+    // it must not, because "MAX + one chunk" is a vacuous bound when nothing bounds one chunk.
+    // Measured with the check absent: a single 256 MiB chunk peaked at 512 MiB resident, 1 GiB at
+    // 2 GiB, 2 GiB at 4 GiB — linear in chunk size, 256x the ceiling, with `RESOURCE_TOO_LARGE`
+    // fired only afterwards. One chunk at V8's ArrayBuffer limit would OOM the process before the
+    // guard ran, from an untrusted node on the §5.3 default-local-node path.
+    const declared = declaredChunkBytes(value);
+    if (declared !== null && this.read + declared > MAX_RPC_RESPONSE_BYTES) {
+      throw tooLargeError(
+        this.res,
+        this.method,
+        `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
+      );
+    }
+    const bytes = copyChunkBytes(value);
+    // A chunk whose bytes cannot be obtained must REFUSE, never continue: silently skipping it
+    // leaves the reader pulling the rest of an unbounded body with nothing counting it. Failing
+    // closed on a shape we cannot account for is the only safe direction for a size guard.
+    if (bytes === null) {
+      throw new DigSdkError(
+        "RPC_MALFORMED_RESPONSE",
+        `dig RPC ${this.method} streamed a chunk that is not bytes, so the response size cannot be bounded.`,
+        { rpcMethod: this.method, httpStatus: this.res.status },
+      );
+    }
+    if (bytes.byteLength === 0) return;
+    this.read += bytes.byteLength;
+    // THE CEILING NOW RUNS AFTER A COPY, so one oversized chunk is copied before it is refused. The
+    // peak is therefore bounded at MAX + one chunk rather than MAX exactly — the deliberate price of
+    // a count that describes memory we own. It replaces the previous "refused before any copy"
+    // property, which was only ever true of a count the producer could falsify.
+    if (this.read > MAX_RPC_RESPONSE_BYTES) {
+      throw tooLargeError(
+        this.res,
+        this.method,
+        `returned more than ${MAX_RPC_RESPONSE_BYTES} bytes; refusing to read further.`,
+      );
+    }
+    // Already a copy — retaining it pins nothing of the producer's, and a producer that later
+    // detaches or overwrites its own buffer cannot change what we counted.
+    this.chunks.push(bytes);
+  }
+
+  /** The accepted chunks flattened into one contiguous buffer. */
+  finish(): Uint8Array {
+    return concatBytes(this.chunks, this.read);
+  }
+}
+
+/**
+ * The one size refusal, shared by every body shape — so the ceiling cannot be enforced strictly on
+ * one path and loosely on another, and so a consumer matching on the code + context fields sees the
+ * same error whichever shape its injected `fetch` produced.
+ */
+function tooLargeError(
+  res: Response,
+  method: string,
+  detail: string,
+): DigSdkError {
+  return new DigSdkError("RESOURCE_TOO_LARGE", `dig RPC ${method} ${detail}`, {
+    rpcMethod: method,
+    httpStatus: res.status,
+    maxResponseBytes: MAX_RPC_RESPONSE_BYTES,
+  });
+}
+
+/** True for any value that can be walked with `for await` — notably a Node `Readable`. */
+function isAsyncIterable(v: unknown): v is AsyncIterable<unknown> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  );
+}
+
+/**
+ * Accumulate an async-iterable body under the same hard budget the WHATWG reader path enforces.
+ *
+ * `for await` calls the iterator's `return()` when the loop exits early, which destroys a Node
+ * `Readable` and releases the socket — the guarantee `reader.cancel()` gives on the other path, so a
+ * hostile node that never ends its stream cannot leave a connection held open here either.
+ */
+async function readBudgeted(
+  source: AsyncIterable<unknown>,
+  res: Response,
+  method: string,
+): Promise<Uint8Array> {
+  const budget = new ChunkBudget(res, method);
+  for await (const value of source) budget.accept(value);
+  return budget.finish();
+}
+
+// The intrinsic accessors for a view's internal slots.
+//
+// `value.byteLength` is an ordinary property lookup, and a GENUINE subclass may override it while
+// every internal slot stays truthful:
+//
+//     class Evil extends Uint8Array { get byteLength() { return 0; } }
+//
+// It satisfies `ArrayBuffer.isView` — correctly, since it really is a view — and then reports 0.
+// Measured: 4.00 GiB drained against the 16 MiB ceiling in 83 ms with 0 counted bytes. `buffer` and
+// `byteOffset` are poisonable the same way. Calling the %TypedArray%.prototype getters instead reads
+// the slots themselves, which no subclass can shadow; they also throw on a foreign receiver, which
+// is what makes them a brand check as well as an accessor.
+//
+// `DataView` keeps its equivalents on a DIFFERENT intrinsic (`DataView.prototype`), and a `DataView`
+// is a legal chunk shape, so both are needed.
+const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype) as object;
+
+function slotGetter(proto: object, name: string): (this: unknown) => never {
+  const get = Object.getOwnPropertyDescriptor(proto, name)?.get;
+  /* c8 ignore next 3 -- unreachable on any conforming runtime; the throw exists so a missing
+     intrinsic fails loudly at load rather than silently degrading the guard to property reads. */
+  if (typeof get !== "function") {
+    throw new Error(`this runtime has no intrinsic ${name} getter`);
+  }
+  return get as (this: unknown) => never;
+}
+
+const TA_BUFFER = slotGetter(TYPED_ARRAY_PROTO, "buffer");
+const TA_BYTE_OFFSET = slotGetter(TYPED_ARRAY_PROTO, "byteOffset");
+const TA_BYTE_LENGTH = slotGetter(TYPED_ARRAY_PROTO, "byteLength");
+const DV_BUFFER = slotGetter(DataView.prototype, "buffer");
+const DV_BYTE_OFFSET = slotGetter(DataView.prototype, "byteOffset");
+const DV_BYTE_LENGTH = slotGetter(DataView.prototype, "byteLength");
+
+/** The window a view really describes, read from its internal slots — or null if it is neither kind. */
+function viewSlots(
+  view: unknown,
+): { buffer: ArrayBufferLike; byteOffset: number; byteLength: number } | null {
+  for (const [buffer, offset, length] of [
+    [TA_BUFFER, TA_BYTE_OFFSET, TA_BYTE_LENGTH],
+    [DV_BUFFER, DV_BYTE_OFFSET, DV_BYTE_LENGTH],
+  ] as const) {
+    try {
+      // A getter called on the wrong kind of view throws, which is precisely the brand check: the
+      // TypedArray getters reject a DataView and vice versa, so the first pair that answers is the
+      // right one. A detached buffer also lands here (length 0), and is refused by the copy below.
+      return {
+        buffer: buffer.call(view) as unknown as ArrayBufferLike,
+        byteOffset: offset.call(view) as unknown as number,
+        byteLength: length.call(view) as unknown as number,
+      };
+    } catch {
+      /* not this kind of view — try the other intrinsic */
+    }
+  }
+  return null;
+}
+
+/**
+ * A stream chunk copied into bytes THIS MODULE OWNS — any typed-array view (`Uint8Array`, `Buffer`,
+ * `DataView`) or a string — else `null`.
+ *
+ * Every property a hostile chunk could poison is read through the intrinsic slot getters above, and
+ * the result is a fresh buffer, so the caller's accounting describes its own memory rather than a
+ * number the producer supplied. This is the ONE copy: the budget retains what this returns.
+ *
+ * `null` (a refusal) covers a non-view non-string, and also a view whose buffer has been detached —
+ * constructing over a detached buffer throws, and a size guard must answer that with a coded
+ * refusal rather than an uncoded `TypeError`.
+ */
+/**
+ * A LOWER bound on the bytes a chunk will contribute, read without copying it — or `null` when the
+ * chunk's shape is unknown and only {@link copyChunkBytes} can answer.
+ *
+ * A lower bound is exactly what a pre-copy refusal needs: exceeding it proves the chunk exceeds the
+ * budget, so refusing is always correct and can never reject a body that would have fit.
+ *
+ * - A view's size comes from the intrinsic slot getters, which a hostile subclass cannot falsify,
+ *   so for views the bound is also EXACT.
+ * - A string's UTF-8 encoding is at least one byte per UTF-16 code unit (ASCII is exactly one; every
+ *   other code unit costs more), so `length` is a true lower bound. Using it rather than a `* 3`
+ *   upper bound is what keeps a 6 MiB ASCII body from being refused as if it were 18 MiB. It also
+ *   bounds the encode that follows to at most three times the REMAINING budget instead of leaving it
+ *   unbounded.
+ */
+function declaredChunkBytes(value: unknown): number | null {
+  if (typeof value === "string") return value.length;
+  if (!ArrayBuffer.isView(value)) return null;
+  return viewSlots(value)?.byteLength ?? null;
+}
+
+function copyChunkBytes(value: unknown): Uint8Array | null {
+  if (typeof value === "string") return new TextEncoder().encode(value);
+  if (!ArrayBuffer.isView(value)) return null;
+  const slots = viewSlots(value);
+  if (slots === null) return null;
+  try {
+    // Two steps, one copy: the inner view is our own honest window onto the producer's buffer, and
+    // `.slice()` on it — a real `Uint8Array`, so a real `%TypedArray%.prototype.slice` — allocates
+    // the buffer we keep. Copying out of a `SharedArrayBuffer` also closes a TOCTOU where a
+    // concurrent writer mutates bytes after they were counted.
+    return new Uint8Array(
+      slots.buffer,
+      slots.byteOffset,
+      slots.byteLength,
+    ).slice();
+  } catch {
+    // Detached, or a length the runtime rejects. Unmeasurable is refused, never skipped.
+    return null;
+  }
+}
+
+/**
+ * The response's declared `content-length` as a non-negative finite number, or `null` when it is
+ * absent, unparseable, or the response object has no `headers` at all.
+ *
+ * ADVISORY ONLY, and deliberately so: this reads a header the node itself supplies, on the leg where
+ * no stream is available to measure. A hostile node can omit it or lie low, which is why the
+ * streaming budget — not this — is the real bound. Its value is that it refuses an oversized body
+ * BEFORE `res.json()` on that leg, and the leg exists because a `Response`-shaped object is not
+ * guaranteed to be a `Response`: reading `headers` unconditionally throws a TypeError on any shim
+ * that omits it, which is not a failure mode a size guard may introduce.
+ */
+function declaredContentLength(res: Response): number | null {
+  const raw = res.headers?.get?.("content-length");
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Flatten `chunks` (totalling `length` bytes) into one contiguous buffer. */
+function concatBytes(
+  chunks: readonly Uint8Array[],
+  length: number,
+): Uint8Array {
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
 function decryptResourceChunks(
   wasm: DigClientWasm,
   keyHex: string,
