@@ -34,23 +34,41 @@ const errorBody = (frame) =>
   JSON.stringify({ jsonrpc: "2.0", id: 1, error: frame });
 
 /**
- * A success response serving bytes that are NOT bound to the on-chain root — the shape a hostile or
- * simply wrong holder produces. Used to prove the trust gate still runs after a redirect.
+ * A success response whose ciphertext DECRYPTS correctly under this URN but is NOT bound to the
+ * on-chain root.
+ *
+ * FIXTURE DESIGN, and the reason it is not simply junk bytes. The property under test is that the
+ * INCLUSION gate still runs after a redirect. Junk bytes are rejected by DECRYPTION first, so the
+ * inclusion check never becomes load-bearing and the test passes whether or not it runs — a false
+ * green this test previously had, caught by mutating `verifyInclusion` to `true` and watching it
+ * stay green. Content that decrypts cleanly leaves inclusion as the ONLY thing that can refuse it,
+ * which is exactly the attack a redirect enables: a holder that knows the public store key can seal
+ * bytes that open perfectly and are not the published content.
  */
-const unverifiableBody = () =>
-  JSON.stringify({
+async function decryptableButUnanchoredBody() {
+  const wasm = await new DigClient({ isBrowser: false }).wasm();
+  const sealed = wasm.encryptResource(
+    STORE,
+    "index.html",
+    new TextEncoder().encode("attacker plaintext"),
+    null,
+  );
+  return JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     result: {
-      total_length: 4,
-      ciphertext: Buffer.from("junk").toString("base64"),
+      offset: 0,
+      total_length: sealed.length,
+      ciphertext: Buffer.from(sealed).toString("base64"),
+      // A well-formed-looking proof that does not bind these bytes to ROOT.
       inclusion_proof: Buffer.from("not-a-proof").toString("base64"),
-      chunk_lens: [4],
+      chunk_lens: [sealed.length],
       complete: true,
       next_offset: null,
       roothash: ROOT,
     },
   });
+}
 
 /**
  * Build an injected fetch from a url -> body-producing map, recording every endpoint asked, in
@@ -94,10 +112,11 @@ test("content served AFTER a redirect is still trust-gated, exactly as a first-h
   // Redirected leg: dig.local misses with the real -32008, the gateway then serves unverifiable
   // bytes. NC-12 says the redirect target is a hint, not an authority — so these bytes must be
   // refused for exactly the same reason they would be refused without any redirect.
+  const sealed = await decryptableButUnanchoredBody();
   const redirected = harness({
     [DIG_LOCAL_URL]: errorBody(FRAMES.redirect),
     // The rung AFTER dig.local is the loopback node, not the gateway (NODE_LADDER order).
-    [LOOPBACK_URL]: unverifiableBody(),
+    [LOOPBACK_URL]: sealed,
   });
   const viaRedirect = await client(redirected.fetchImpl)
     .readVerified({ urn: URN })
@@ -109,7 +128,7 @@ test("content served AFTER a redirect is still trust-gated, exactly as a first-h
   // CONTROL: the same unverifiable bytes served directly by the first node, no redirect involved.
   // Without this control the test could pass on a redirect-specific failure that has nothing to do
   // with verification, and would prove nothing about the trust gate.
-  const direct = harness({ [DIG_LOCAL_URL]: unverifiableBody() });
+  const direct = harness({ [DIG_LOCAL_URL]: sealed });
   const viaDirect = await client(direct.fetchImpl)
     .readVerified({ urn: URN })
     .then(
@@ -125,6 +144,10 @@ test("content served AFTER a redirect is still trust-gated, exactly as a first-h
     viaDirect.code,
     "the redirect path must fail for the SAME reason as the direct path — a different code would mean a different, weaker path",
   );
+  // And name that reason, so the test cannot drift into passing on some other refusal: these bytes
+  // decrypt cleanly, so INCLUSION_UNVERIFIED is the only honest verdict, and it is the one that
+  // proves the merkle gate ran on content a redirect produced.
+  assert.equal(viaRedirect.code, "INCLUSION_UNVERIFIED");
 
   // ...and the redirect genuinely happened: the second node really was asked. Without this the
   // assertions above would hold vacuously if the client had refused before ever redirecting.
@@ -227,16 +250,17 @@ test("-32004 is settled — it stops immediately and does not walk the ladder", 
 // ---------------------------------------------------------------------------
 
 test("-32003 is waited out against the SAME node before any other rung is tried", async () => {
+  const servedOk = await decryptableButUnanchoredBody();
   let attempts = 0;
   const { asked, fetchImpl } = harness({
     [DIG_LOCAL_URL]: () => {
       attempts += 1;
       // Refuse twice, then serve. A client that treated -32003 as "move on" would never see the
       // third attempt, and a client that treated it as fatal would never retry at all.
-      return attempts <= 2 ? errorBody(FRAMES.rate_limited) : unverifiableBody();
+      return attempts <= 2 ? errorBody(FRAMES.rate_limited) : servedOk;
     },
-    [LOOPBACK_URL]: unverifiableBody(),
-    [GATEWAY_URL]: unverifiableBody(),
+    [LOOPBACK_URL]: servedOk,
+    [GATEWAY_URL]: servedOk,
   });
   await client(fetchImpl)
     .read({ urn: URN })
