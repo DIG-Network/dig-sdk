@@ -87,7 +87,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@dignetwork/chip35-dl-coin-wasm": "^0.13.0",
+    "@dignetwork/chip35-dl-coin-wasm": "^0.16.0",
     "@dignetwork/dig-capsule-wasm": "^0.1.3"
   },
   "peerDependencies": {
