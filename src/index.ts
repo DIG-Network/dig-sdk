@@ -152,3 +152,5 @@ export {
   type RedirectAddress,
   type RpcErrorLike,
 } from "./miss.js";
+
+export { ladderAfter } from "./node-resolver.js";

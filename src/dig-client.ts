@@ -42,12 +42,23 @@ import {
   DEFAULT_PROBE_TIMEOUT_MS,
   GATEWAY_URL,
   isBrowserEnv,
+  ladderAfter,
   makeHealthProbe,
   readEnvNodeUrl,
   resolveNodeEndpoint,
   type NodeProbe,
   type ResolvedNode,
 } from "./node-resolver.js";
+import {
+  MAX_MISS_BACKOFF_ATTEMPTS,
+  RedirectBudget,
+  classifyMissError,
+  missBackoffMs,
+  parseMissRedirect,
+  type MissKind,
+  type RedirectProvider,
+  type RpcErrorLike,
+} from "./miss.js";
 
 /**
  * The public gateway endpoint — the §5.3 ladder's TERMINAL fallback, NOT a privileged primary. It is
@@ -167,6 +178,11 @@ export interface DigClientOptions {
    * constraints forbid probing a plaintext-loopback or self-signed-localhost node from a page).
    */
   isBrowser?: boolean;
+  /**
+   * Override how the client waits out a `-32003` back-off (dig_ecosystem#2188). Supplied by tests
+   * so the real retry path can be exercised without real delays; production uses `setTimeout`.
+   */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 interface GetContentResult {
@@ -200,6 +216,11 @@ export class DigClient {
   private readonly nodeProbe: NodeProbe;
   private readonly probeTimeoutMs: number;
   private readonly isBrowser: boolean;
+  /**
+   * How the client waits out a `-32003` back-off. Injectable so the miss-contract tests can drive
+   * the real retry path without spending real wall-clock time on it.
+   */
+  private readonly sleepImpl: (ms: number) => Promise<void>;
   /** Memoized §5.3 resolution — resolved once per instance and reused for its lifetime. */
   private resolvedNode: Promise<ResolvedNode> | null = null;
 
@@ -211,6 +232,9 @@ export class DigClient {
     this.nodeProbe = options.nodeProbe ?? makeHealthProbe(this.fetchImpl);
     this.probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
     this.isBrowser = options.isBrowser ?? isBrowserEnv();
+    this.sleepImpl =
+      options.sleep ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
   /**
@@ -233,7 +257,18 @@ export class DigClient {
 
   /** The endpoint for a call: a per-call `opts.rpc` override, else the memoized §5.3 resolution. */
   private async endpoint(opts: ReadOptions): Promise<string> {
-    return opts.rpc ?? (await this.resolveEndpoint()).url;
+    return (await this.resolvedEndpointFor(opts)).url;
+  }
+
+  /**
+   * The endpoint for a call, WITH its provenance — which the miss contract needs and a bare URL
+   * cannot supply. A per-call `opts.rpc` is `explicit`, so it is treated exactly like a
+   * constructor-supplied endpoint: chosen by the user, and never routed around on a miss.
+   */
+  private async resolvedEndpointFor(opts: ReadOptions): Promise<ResolvedNode> {
+    return opts.rpc
+      ? { url: opts.rpc, via: "explicit" }
+      : await this.resolveEndpoint();
   }
 
   /** Load the read-crypto wasm (integrity per the loader path). Exposed for callers wanting the raw functions. */
@@ -416,14 +451,14 @@ export class DigClient {
     },
     opts: ReadOptions = {},
   ): Promise<ReadResult> {
-    const rpc = await this.endpoint(opts);
+    const from = await this.resolvedEndpointFor(opts);
     const wasm = await this.wasm();
     const rk = wasm.retrievalKey(input.storeId, input.resourceKey);
-    const { ciphertext, proof, chunkLens } = await this.fetchCiphertext(
+    const { ciphertext, proof, chunkLens } = await this.fetchWithMissContract(
       input.storeId,
       rk,
       input.root,
-      rpc,
+      from,
     );
     let verified = false;
     try {
@@ -535,11 +570,100 @@ export class DigClient {
 
   // Stream the FULL ciphertext for a resource from the RPC by retrieval key, reassembling 3-MiB
   // chunks. A null result is a TRANSPORT failure, never a presence judgment.
+  /**
+   * Fetch a resource's ciphertext, HONOURING dig-node's miss contract (dig_ecosystem#2188).
+   *
+   * A node that does not hold the content answers with an instruction rather than a bare failure:
+   * `-32008` names holders, `-32003` asks the client to back off, `-32017` says absence was never
+   * established. This method is the one place the SDK acts on those, so a miss that is recoverable
+   * is recovered INVISIBLY and a miss that is not says something true about why.
+   *
+   * # Where a redirect actually sends the request
+   *
+   * NOT to the peer addresses in `data.redirect`. Those name DIG PEERS on the mTLS peer protocol,
+   * which is not the JSON-RPC surface this client speaks (and in a browser cannot be dialled at
+   * all). What the client does with a redirect is re-ask the NEXT rung of its own §5.3 ladder,
+   * echoing `redirect_depth` so the hop budget stays monotone across nodes, and carry the named
+   * holders out on the error if it runs out of rungs — so a node-class caller that CAN dial them
+   * still receives them.
+   *
+   * # The redirect target is not trusted, and does not need to be
+   *
+   * NC-12: every peer is untrusted, and a `-32008` is a hint, not an authority. This method
+   * deliberately returns raw ciphertext rather than a verdict, so bytes obtained after ANY number of
+   * redirects flow through exactly the same inclusion-proof and decryption gate in
+   * {@link readResource} as bytes from the first node asked. There is no path by which following a
+   * redirect skips verification — the verification is not in this loop.
+   */
+  private async fetchWithMissContract(
+    storeId: string,
+    rk: string,
+    root: string,
+    from: ResolvedNode,
+  ): Promise<{
+    ciphertext: Uint8Array;
+    proof: string;
+    chunkLens: number[] | null;
+  }> {
+    const endpoints = [
+      from.url,
+      ...ladderAfter(from.via, this.isBrowser).map((rung) => rung.url),
+    ];
+    const budget = new RedirectBudget();
+    let named: readonly RedirectProvider[] = [];
+    let depth = 0;
+    let backoffs = 0;
+    let cursor = 0;
+
+    for (;;) {
+      const endpoint = endpoints[cursor];
+      // Unreachable: `cursor` is only ever advanced behind the bounds check below, and `endpoints`
+      // always holds at least the endpoint we were handed. Stated rather than asserted so the loop
+      // has no index that is merely assumed to be in range.
+      if (endpoint === undefined) throw exhausted("redirect", named, budget.used, null);
+      try {
+        return await this.fetchCiphertext(storeId, rk, root, endpoint, depth);
+      } catch (e) {
+        const miss = missOf(e);
+        if (!miss) throw e;
+
+        if (miss === "rate-limited" && backoffs < MAX_MISS_BACKOFF_ATTEMPTS) {
+          // Scoped to the NODE, not the content: wait, then re-ask the SAME endpoint. Moving to
+          // another node here would answer a "you are asking me too fast" with more fan-out.
+          await this.sleepImpl(missBackoffMs(backoffs++));
+          continue;
+        }
+
+        if (miss === "redirect") {
+          const redirect = parseMissRedirect(rpcErrorOf(e));
+          if (redirect) {
+            if (redirect.providers.length) named = redirect.providers;
+            const next = budget.advance(redirect);
+            if (next === null) throw noReachableHolder(named, budget.used, e);
+            depth = next;
+          }
+        } else if (miss === "not-found") {
+          // Settled. The node is not guessing, and no other rung will know better.
+          throw e;
+        }
+
+        // `redirect`, `inconclusive`, or a spent back-off: this node cannot answer, so try the next
+        // rung of the ladder. An explicitly-configured node has no successors (see `ladderAfter`),
+        // which is what keeps a user's chosen endpoint from being silently routed around.
+        cursor++;
+        if (cursor >= endpoints.length) {
+          throw exhausted(miss, named, budget.used, e);
+        }
+      }
+    }
+  }
+
   private async fetchCiphertext(
     storeId: string,
     rk: string,
     root: string,
     rpc: string,
+    redirectDepth = 0,
   ): Promise<{
     ciphertext: Uint8Array;
     proof: string;
@@ -571,6 +695,10 @@ export class DigClient {
         retrieval_key: rk,
         offset,
         length: RPC_CHUNK_BYTES,
+        // Echoed so the hop budget is monotone ACROSS nodes: a node at or over its own
+        // REDIRECT_HOP_CAP answers a plain not-found rather than redirecting again, which is what
+        // stops a set of nodes bouncing a client around between them.
+        redirect_depth: redirectDepth,
       });
       if (!r)
         throw new DigSdkError(
@@ -745,7 +873,7 @@ export class DigClient {
     // method, so an uncoded throw here escapes the whole public surface (#2518).
     let json: {
       result?: T;
-      error?: { message?: string; code?: number };
+      error?: { message?: string; code?: number; data?: unknown };
     };
     try {
       json = await readBoundedJson<typeof json>(res, method);
@@ -764,7 +892,16 @@ export class DigClient {
       throw new DigSdkError(
         "RPC_ERROR",
         `dig RPC ${method}: ${json.error.message ?? "error"}`,
-        { rpcMethod: method, rpcCode: json.error.code },
+        // `rpcErrorData` carries `error.data` VERBATIM. It used to be dropped here, which is what
+        // made the miss contract invisible to every caller: a `-32008` redirect names its holders in
+        // `data.redirect`, so discarding `data` reduced a recoverable miss to an opaque RPC_ERROR
+        // (dig_ecosystem#2188). Kept unparsed at this layer -- `miss.ts` owns the decoding, and it
+        // treats every field as hostile.
+        {
+          rpcMethod: method,
+          rpcCode: json.error.code,
+          rpcErrorData: json.error.data,
+        },
       );
     }
     return json ? (json.result ?? null) : null;
@@ -1187,4 +1324,72 @@ function undefinedFetch(): typeof fetch {
       "No global fetch available. Pass { fetch } to DigClient (Node < 18 needs a fetch polyfill).",
     );
   }) as unknown as typeof fetch;
+}
+
+// -- miss-contract helpers (dig_ecosystem#2188) --------------------------------------------------
+
+/**
+ * Recover the JSON-RPC error object from a thrown {@link DigSdkError}, or `null` when the failure
+ * was not an RPC error at all (a transport failure, a size refusal, a malformed body). The code and
+ * `data` are carried in the error's context by `rpcCall`.
+ */
+function rpcErrorOf(e: unknown): RpcErrorLike | null {
+  if (!isDigSdkError(e, "RPC_ERROR")) return null;
+  return { code: e.context.rpcCode, data: e.context.rpcErrorData };
+}
+
+/** The miss kind a thrown error represents, or `null` when it is not a miss answer. */
+function missOf(e: unknown): MissKind | null {
+  return classifyMissError(rpcErrorOf(e));
+}
+
+/**
+ * The honest failure when holders were named but none could be reached.
+ *
+ * NOT a not-found: a node that redirected said the content EXISTS. Reporting absence here would
+ * assert something the client does not know, and would send a person away from content that is
+ * merely unreachable from where they are standing right now.
+ */
+function noReachableHolder(
+  providers: readonly RedirectProvider[],
+  hops: number,
+  cause: unknown,
+): DigSdkError {
+  return new DigSdkError(
+    "CONTENT_NO_REACHABLE_HOLDER",
+    "This content exists, but no holder could be reached right now. Try again shortly.",
+    {
+      rpcMethod: "dig.getContent",
+      providers,
+      redirectHops: hops,
+      retryable: true,
+    },
+    { cause },
+  );
+}
+
+/** The honest failure when the ladder ran out before any node could answer. */
+function exhausted(
+  miss: MissKind,
+  providers: readonly RedirectProvider[],
+  hops: number,
+  cause: unknown,
+): DigSdkError {
+  if (miss === "rate-limited") {
+    return new DigSdkError(
+      "CONTENT_MISS_RATE_LIMITED",
+      "The content node asked this client to slow down and is still refusing lookups. Try again shortly.",
+      { rpcMethod: "dig.getContent", retryable: true, scope: "node" },
+      { cause },
+    );
+  }
+  if (miss === "inconclusive") {
+    return new DigSdkError(
+      "CONTENT_AVAILABILITY_UNKNOWN",
+      "Whether this content is available could not be established: part of the search did not answer. This is not a not-found, and a retry is meaningful.",
+      { rpcMethod: "dig.getContent", retryable: true },
+      { cause },
+    );
+  }
+  return noReachableHolder(providers, hops, cause);
 }

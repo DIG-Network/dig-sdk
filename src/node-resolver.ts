@@ -168,3 +168,31 @@ async function probeSafely(
     return false;
   }
 }
+
+/**
+ * The ladder rungs a client may fall through to AFTER `via`, when the node it is talking to answers
+ * a miss it cannot satisfy (dig_ecosystem#2188).
+ *
+ * # Why an explicitly-configured node has NO successors
+ *
+ * §5.3 makes an explicit endpoint — a constructor `rpc`, a per-call override, or `DIG_NODE_URL` —
+ * win outright over the whole ladder. That precedence has to survive the miss contract too: a user
+ * who has pointed the client at one node has said which node to use, and silently sending their
+ * read to `rpc.dig.net` because that node missed would leak the request to a host they deliberately
+ * did not choose. So an explicit or env-supplied endpoint returns an EMPTY list, and a miss it
+ * cannot satisfy is surfaced honestly instead of routed around.
+ *
+ * For the probed rungs the successors are the remaining rungs in ladder order, with the local rungs
+ * skipped in the browser exactly as {@link resolveNodeEndpoint} skips them.
+ */
+export function ladderAfter(
+  via: NodeResolutionVia,
+  isBrowser: boolean,
+): readonly NodeCandidate[] {
+  if (via === "explicit" || via === "env") return [];
+  const reachable = NODE_LADDER.filter(
+    (rung) => !rung.localOnly || !isBrowser,
+  );
+  const index = reachable.findIndex((rung) => rung.via === via);
+  return index === -1 ? [] : reachable.slice(index + 1);
+}
