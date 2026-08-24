@@ -488,6 +488,53 @@ resolved to its CURRENT on-chain state (current owner, royalty, CHIP-0007 metada
 > chain-authoritative owner/royalty facts SHOULD confirm them against the chain independently. (Unlike
 > the content readers in §7.3.1, which ARE fail-closed on inclusion.)
 
+### 7.3.2 The miss contract (`-32003` / `-32008` / `-32017`) — NORMATIVE
+
+A node that does not hold the requested content answers with an INSTRUCTION, not a bare failure. A
+client MUST distinguish the following, because they carry different and in places opposite meanings.
+
+| Code                                 | Meaning                                                     | Client MUST                             |
+| ------------------------------------ | ----------------------------------------------------------- | --------------------------------------- |
+| `-32008` `CONTENT_REDIRECT`          | Not held here; `error.data.redirect` names holders          | Re-request, bounded (below)             |
+| `-32003` `CONTENT_MISS_RATE_LIMITED` | This requestor is driving THIS node's miss lookups too fast | Back off from that NODE and retry it    |
+| `-32017` `CONTENT_MISS_INCONCLUSIVE` | Availability was NOT established (a leg timed out/refused)  | Treat as UNKNOWN; a retry is meaningful |
+| `-32004` `RESOURCE_UNAVAILABLE`      | Settled: not held at the requested root                     | Stop                                    |
+
+**`error.data.redirect`** carries `content` (`store_id`, `root`, `retrieval_key`), `providers` (each
+a holder `peer_id` PLUS its candidate `{host, port, kind}` addresses), `redirect_depth`, and
+`max_redirects`.
+
+**The bound.** A client MUST bound redirects. It MUST count its OWN hops rather than relying on the
+served `redirect_depth` to advance, because a set of nodes each answering `redirect_depth: 0` is
+well-formed and would otherwise loop forever. The SDK uses
+`consumed = max(consumed + 1, servedDepth)` against a ceiling of `REDIRECT_HOP_CAP` (4, equal to
+dig-node's). An advertised `max_redirects` MAY lower that ceiling and MUST NOT raise it. The client
+MUST echo the resulting depth as `params.redirect_depth`, so the budget is monotone across nodes.
+
+**Trust.** A redirect is a HINT, never an authority (NC-12: every peer is untrusted). A named holder
+may not hold the content, may not answer, or may serve something else. Content is accepted because
+it verifies against the on-chain merkle root — never because a peer named the peer that served it.
+A client MUST apply the same verification to redirected content as to a first-hop answer; the SDK
+does so structurally, by returning ciphertext from the redirect loop and gating it in the single
+place §7.3.1 already describes.
+
+**Where a redirect sends the request.** The `providers` addresses name DIG peers on the mTLS peer
+protocol, which is NOT the JSON-RPC surface a browser client speaks. The SDK therefore re-asks the
+next rung of the §5.3 ladder and surfaces the named holders on the resulting error, so a node-class
+caller that can dial the peer protocol still receives them. An explicitly-configured endpoint (a
+constructor `rpc`, a per-call `opts.rpc`, or `DIG_NODE_URL`) has NO successors: §7.0 precedence
+survives the miss contract, and a user's chosen node MUST NOT be silently routed around.
+
+**Back-off scope.** `-32003` is scoped to the NODE, for all content — never to the content. The
+node's limiter is a per-requestor bucket on its miss-lookup path, so the refusal says nothing about
+the resource. The node states no interval on the wire, so a client supplies one; the SDK starts at
+250 ms, the period implied by the node's published refill rate of 4 lookups per second, and doubles.
+
+**Honesty.** A miss that is recovered MUST be invisible. A miss that is not recovered MUST NOT be
+reported as absence when absence was never established: the SDK raises
+`CONTENT_NO_REACHABLE_HOLDER`, `CONTENT_MISS_RATE_LIMITED` or `CONTENT_AVAILABILITY_UNKNOWN`, each
+carrying `retryable: true`.
+
 ### 7.3.1 Content-read integrity — oblivious primitives + secure-by-default siblings (HARD RULE)
 
 Decryption success alone does NOT prove chain origin: for a public (saltless) store the content key

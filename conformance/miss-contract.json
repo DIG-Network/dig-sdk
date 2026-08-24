@@ -1,0 +1,58 @@
+{
+  "$comment": [
+    "The REAL wire frames dig-node emits for its miss contract, transcribed field-for-field from",
+    "the node's own source and its own assertions rather than from an assumption about them:",
+    "",
+    "  redirect        dig-node/crates/dig-node-core/src/download.rs, redirect_error_object()",
+    "                  asserted by redirect_error_object_names_code_providers_depth_and_cap()",
+    "  rate_limited    dig-node/crates/dig-node-core/src/download.rs, MISS_RATE_LIMITED_MESSAGE",
+    "                  emitted through rpc_err(), which frames {jsonrpc,id,error:{code,message}}",
+    "                  and carries NO data member; see also",
+    "                  crates/dig-node-core/src/seams/dig_peer/forwarded_ask.rs (a literal frame)",
+    "  inconclusive    dig-node/crates/dig-node-core/src/download.rs, MISS_INCONCLUSIVE_MESSAGE,",
+    "                  numbered by dig_rpc_protocol::ErrorCode::ContentMissInconclusive",
+    "",
+    "The hex ids and the 10.0.0.7:9444 address are the node test's own mock values, kept verbatim",
+    "so a reader can diff this file against that test.",
+    "",
+    "KNOWN DIVERGENCE, recorded rather than papered over: dig-rpc-protocol's ErrorData declares",
+    "data.code (the UPPER_SNAKE machine code) and data.origin on EVERY canonical error, but the",
+    "node builds these frames by hand and emits neither. The SDK therefore branches on the NUMERIC",
+    "code, which is what is actually on the wire. Reported upstream on the parent ticket."
+  ],
+  "redirect": {
+    "code": -32008,
+    "message": "content not held by this node; re-request against a provider in data.redirect",
+    "data": {
+      "redirect": {
+        "content": {
+          "store_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "root": "0202020202020202020202020202020202020202020202020202020202020202",
+          "retrieval_key": "0303030303030303030303030303030303030303030303030303030303030303"
+        },
+        "providers": [
+          {
+            "peer_id": "0707070707070707070707070707070707070707070707070707070707070707",
+            "addresses": [
+              { "host": "10.0.0.7", "port": 9444, "kind": "direct" }
+            ]
+          }
+        ],
+        "redirect_depth": 2,
+        "max_redirects": 4
+      }
+    }
+  },
+  "rate_limited": {
+    "code": -32003,
+    "message": "miss lookup rate limit exceeded for this requestor; back off and retry"
+  },
+  "inconclusive": {
+    "code": -32017,
+    "message": "availability could not be established: part of the search did not answer, so this is not a not-found and the request may be retried"
+  },
+  "not_found": {
+    "code": -32004,
+    "message": "resource not available at the requested root"
+  }
+}

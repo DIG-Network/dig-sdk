@@ -70,6 +70,30 @@ export const DIG_SDK_ERROR_CODES = Object.freeze({
   /** The read-crypto wasm could not be loaded (fetch/resolve failure). */
   WASM_LOAD_FAILED: "WASM_LOAD_FAILED",
 
+  // ---- dig-node miss contract (miss.ts, dig-client.ts) ----
+  /**
+   * The content was not held by any node the client could reach, and the redirect budget or the
+   * §5.3 ladder was exhausted before a holder answered.
+   *
+   * It is DELIBERATELY NOT a not-found. A node that redirects has told the client the content
+   * exists; failing to reach a holder is a statement about reachability right now, and a client
+   * that reported "not found" here would assert something it does not know. `context.providers`
+   * carries the holders that were named, and `context.retryable` is `true`.
+   */
+  CONTENT_NO_REACHABLE_HOLDER: "CONTENT_NO_REACHABLE_HOLDER",
+  /**
+   * A node answered `-32003`: this client is driving that node's miss lookups faster than its
+   * per-requestor budget allows, and the client's back-off attempts were spent. Scoped to the NODE,
+   * never to the content — retrying the same content against a different node is legitimate.
+   */
+  CONTENT_MISS_RATE_LIMITED: "CONTENT_MISS_RATE_LIMITED",
+  /**
+   * A node answered `-32017`: availability could not be ESTABLISHED because part of the search
+   * timed out, refused, or was unreachable. The answer is UNKNOWN, not negative — treating this as
+   * absence is what turns one slow peer into proof that content does not exist.
+   */
+  CONTENT_AVAILABILITY_UNKNOWN: "CONTENT_AVAILABILITY_UNKNOWN",
+
   // ---- paywall / spends (paywall.ts) ----
   /** The canonical chip35 wasm builder for this operation is unavailable (never hand-rolled). */
   SPEND_BUILDER_UNAVAILABLE: "SPEND_BUILDER_UNAVAILABLE",
