@@ -1,7 +1,14 @@
 {
   "$comment": [
-    "DIG URN parse conformance table — the AUTHORITY for agreement between the DIG URN parsers.",
-    "The parsed resourceKey and salt feed retrieval-key and decryption-key derivation, so two",
+    "DIG URN parse conformance table — dig-sdk's EDGE-LAYER corpus, NOT the ecosystem authority.",
+    "",
+    "PROVENANCE, stated precisely because a wrong one here is worse than none. The surviving",
+    "cross-repo authority for the DIG URN grammar is dig-urn-protocol at 00-foundation; this file",
+    "does not outrank it and must not be read as doing so. What this corpus adds is EDGE-LAYER",
+    "discrimination the Rust corpus structurally cannot express — salt position, mixed-case",
+    "parameter names, and '#'-leading resource keys — so the two are complementary, not rival",
+    "authorities. Where they disagree, dig-urn-protocol wins.",
+    "",    "The parsed resourceKey and salt feed retrieval-key and decryption-key derivation, so two",
     "implementations that parse one URN differently derive different keys and read different bytes.",
     "Agreement therefore has to be verifiable, not asserted in a comment: run your parser against",
     "this table (dig-sdk does, in test/urn-conformance.test.mjs).",
