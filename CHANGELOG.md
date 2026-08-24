@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.9.0] - 2026-08-24
+
+### Features
+- **read:** Adopt dig-node's miss contract (-32003 back-off, -32008 redirect) (#17)
+
 ## [0.8.0] - 2026-08-24
 
 ### Testing
