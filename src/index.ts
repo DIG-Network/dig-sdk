@@ -134,3 +134,21 @@ export {
   type ModuleDescriptor,
   type NodeResolutionDescriptor,
 } from "./capabilities.js";
+
+// ---- dig-node miss contract (-32003 back-off / -32008 redirect) ----
+export {
+  MISS_RPC_CODES,
+  REDIRECT_HOP_CAP,
+  MISS_BACKOFF_BASE_MS,
+  MAX_MISS_BACKOFF_ATTEMPTS,
+  MISS_RATE_LIMIT_SCOPE,
+  RedirectBudget,
+  classifyMissError,
+  parseMissRedirect,
+  missBackoffMs,
+  type MissKind,
+  type MissRedirect,
+  type RedirectProvider,
+  type RedirectAddress,
+  type RpcErrorLike,
+} from "./miss.js";
