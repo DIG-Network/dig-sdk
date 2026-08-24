@@ -190,9 +190,7 @@ export function ladderAfter(
   isBrowser: boolean,
 ): readonly NodeCandidate[] {
   if (via === "explicit" || via === "env") return [];
-  const reachable = NODE_LADDER.filter(
-    (rung) => !rung.localOnly || !isBrowser,
-  );
+  const reachable = NODE_LADDER.filter((rung) => !rung.localOnly || !isBrowser);
   const index = reachable.findIndex((rung) => rung.via === via);
   return index === -1 ? [] : reachable.slice(index + 1);
 }

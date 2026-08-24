@@ -25,7 +25,9 @@ import {
 
 const FRAMES = JSON.parse(
   readFileSync(
-    fileURLToPath(new URL("../conformance/miss-contract.json", import.meta.url)),
+    fileURLToPath(
+      new URL("../conformance/miss-contract.json", import.meta.url),
+    ),
     "utf8",
   ),
 );
@@ -70,7 +72,11 @@ test("the four kinds are DISTINCT — a client can act on the difference", () =>
     FRAMES.inconclusive,
     FRAMES.not_found,
   ].map(classifyMissError);
-  assert.equal(new Set(kinds).size, 4, `expected 4 distinct kinds, got ${kinds}`);
+  assert.equal(
+    new Set(kinds).size,
+    4,
+    `expected 4 distinct kinds, got ${kinds}`,
+  );
 });
 
 test("a non-miss error is not claimed by the miss contract", () => {
@@ -145,7 +151,11 @@ test("a hostile redirect payload degrades field by field, never throws", () => {
   assert.deepEqual(r.providers[0].addresses, [
     { host: "ok", port: 9444, kind: "direct" },
   ]);
-  assert.equal(r.redirectDepth, 0, "an unreadable depth reads as zero consumed");
+  assert.equal(
+    r.redirectDepth,
+    0,
+    "an unreadable depth reads as zero consumed",
+  );
   assert.equal(
     r.maxRedirects,
     REDIRECT_HOP_CAP,

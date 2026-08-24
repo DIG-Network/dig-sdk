@@ -620,7 +620,8 @@ export class DigClient {
       // Unreachable: `cursor` is only ever advanced behind the bounds check below, and `endpoints`
       // always holds at least the endpoint we were handed. Stated rather than asserted so the loop
       // has no index that is merely assumed to be in range.
-      if (endpoint === undefined) throw exhausted("redirect", named, budget.used, null);
+      if (endpoint === undefined)
+        throw exhausted("redirect", named, budget.used, null);
       try {
         return await this.fetchCiphertext(storeId, rk, root, endpoint, depth);
       } catch (e) {

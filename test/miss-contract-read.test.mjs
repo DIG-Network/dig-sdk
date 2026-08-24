@@ -20,7 +20,9 @@ import {
 
 const FRAMES = JSON.parse(
   readFileSync(
-    fileURLToPath(new URL("../conformance/miss-contract.json", import.meta.url)),
+    fileURLToPath(
+      new URL("../conformance/miss-contract.json", import.meta.url),
+    ),
     "utf8",
   ),
 );
@@ -138,7 +140,10 @@ test("content served AFTER a redirect is still trust-gated, exactly as a first-h
 
   assert.ok(viaRedirect, "redirected read must NOT return bytes");
   assert.ok(viaDirect, "the control read must NOT return bytes either");
-  assert.ok(isDigSdkError(viaRedirect), `coded error expected, got ${viaRedirect}`);
+  assert.ok(
+    isDigSdkError(viaRedirect),
+    `coded error expected, got ${viaRedirect}`,
+  );
   assert.equal(
     viaRedirect.code,
     viaDirect.code,

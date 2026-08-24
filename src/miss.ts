@@ -100,10 +100,7 @@ export interface MissRedirect {
  * that asked it to stop or reports "not found" for content that is merely momentarily unreachable.
  */
 export type MissKind =
-  | "redirect"
-  | "rate-limited"
-  | "inconclusive"
-  | "not-found";
+  "redirect" | "rate-limited" | "inconclusive" | "not-found";
 
 /** The minimal JSON-RPC error shape this module reads. */
 export interface RpcErrorLike {

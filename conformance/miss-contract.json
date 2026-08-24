@@ -33,7 +33,9 @@
         "providers": [
           {
             "peer_id": "0707070707070707070707070707070707070707070707070707070707070707",
-            "addresses": [{ "host": "10.0.0.7", "port": 9444, "kind": "direct" }]
+            "addresses": [
+              { "host": "10.0.0.7", "port": 9444, "kind": "direct" }
+            ]
           }
         ],
         "redirect_depth": 2,

@@ -493,12 +493,12 @@ resolved to its CURRENT on-chain state (current owner, royalty, CHIP-0007 metada
 A node that does not hold the requested content answers with an INSTRUCTION, not a bare failure. A
 client MUST distinguish the following, because they carry different and in places opposite meanings.
 
-| Code | Meaning | Client MUST |
-|---|---|---|
-| `-32008` `CONTENT_REDIRECT` | Not held here; `error.data.redirect` names holders | Re-request, bounded (below) |
-| `-32003` `CONTENT_MISS_RATE_LIMITED` | This requestor is driving THIS node's miss lookups too fast | Back off from that NODE and retry it |
-| `-32017` `CONTENT_MISS_INCONCLUSIVE` | Availability was NOT established (a leg timed out/refused) | Treat as UNKNOWN; a retry is meaningful |
-| `-32004` `RESOURCE_UNAVAILABLE` | Settled: not held at the requested root | Stop |
+| Code                                 | Meaning                                                     | Client MUST                             |
+| ------------------------------------ | ----------------------------------------------------------- | --------------------------------------- |
+| `-32008` `CONTENT_REDIRECT`          | Not held here; `error.data.redirect` names holders          | Re-request, bounded (below)             |
+| `-32003` `CONTENT_MISS_RATE_LIMITED` | This requestor is driving THIS node's miss lookups too fast | Back off from that NODE and retry it    |
+| `-32017` `CONTENT_MISS_INCONCLUSIVE` | Availability was NOT established (a leg timed out/refused)  | Treat as UNKNOWN; a retry is meaningful |
+| `-32004` `RESOURCE_UNAVAILABLE`      | Settled: not held at the requested root                     | Stop                                    |
 
 **`error.data.redirect`** carries `content` (`store_id`, `root`, `retrieval_key`), `providers` (each
 a holder `peer_id` PLUS its candidate `{host, port, kind}` addresses), `redirect_depth`, and
