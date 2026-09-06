@@ -75,16 +75,16 @@ package to npm.
 
 ## Where things live
 
-| Path | Responsibility |
-|---|---|
-| `src/provider/` | `ChiaProvider` — CHIP-0002 wallet abstraction (DIG Browser wallet, WalletConnect/Sage fallback) |
-| `src/dig-client.ts` / `src/dig-client-entry.ts` | `DigClient` — read, verify, and decrypt content by URN |
-| `src/spend.ts` | The CHIP-0035 spend builder, re-exporting `@dignetwork/chip35-dl-coin-wasm` |
-| `src/paywall.ts` / `src/collection.ts` | `Paywall` — pay-to-unlock and NFT/collection-gated access |
-| `src/adapters*.ts` | The Vite and Next.js framework adapters |
-| `src/urn.ts` | URN parsing + the retrieval-key derivation |
-| `conformance/` | Cross-repo conformance fixtures (e.g. URN parsing) shared with other DIG repos |
-| `test/` | The `node --test` suite (mocked transports, no live network) |
+| Path                                            | Responsibility                                                                                  |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `src/provider/`                                 | `ChiaProvider` — CHIP-0002 wallet abstraction (DIG Browser wallet, WalletConnect/Sage fallback) |
+| `src/dig-client.ts` / `src/dig-client-entry.ts` | `DigClient` — read, verify, and decrypt content by URN                                          |
+| `src/spend.ts`                                  | The CHIP-0035 spend builder, re-exporting `@dignetwork/chip35-dl-coin-wasm`                     |
+| `src/paywall.ts` / `src/collection.ts`          | `Paywall` — pay-to-unlock and NFT/collection-gated access                                       |
+| `src/adapters*.ts`                              | The Vite and Next.js framework adapters                                                         |
+| `src/urn.ts`                                    | URN parsing + the retrieval-key derivation                                                      |
+| `conformance/`                                  | Cross-repo conformance fixtures (e.g. URN parsing) shared with other DIG repos                  |
+| `test/`                                         | The `node --test` suite (mocked transports, no live network)                                    |
 
 Spends are never hand-rolled: this package only ever builds them through
 `@dignetwork/chip35-dl-coin-wasm` and has the wallet sign them.
