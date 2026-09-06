@@ -10,7 +10,8 @@ surface and are stable contracts.
 The SDK's other pillars — `DigClient` (read-crypto), `Paywall` (monetization), the `/spend`
 CHIP-0035 re-export, and the Vite/Next framework adapters — are documented in `README.md`; their
 normative contracts land in this file as they are substantially touched. The read-crypto surface
-`DigClient` consumes is normatively specified in §7.
+`DigClient` consumes is normatively specified in §7; the `Paywall`'s coin management — capped
+high-value-first selection and consolidation — in §8.
 
 ---
 
@@ -147,15 +148,18 @@ discoverable enumeration a 'Browser Wallet vs WalletConnect' chooser UI renders 
 
 Every failure on this surface is a `DigSdkError` (never a bare `Error`) with a stable UPPER_SNAKE
 `.code` plus structured `.context`. The catalogue is exhaustively listed in `README.md` §"Error
-codes" and mirrored by `capabilities().errorCodes`; the codes this surface can throw are:
+codes" and mirrored by `capabilities().errorCodes`; the codes the connector surface (§1–§3) and the
+coin-management surface (§8) can throw are:
 
-| Code                    | Thrown when                                                                                                                 | Context                                              |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `NO_INJECTED_WALLET`    | `mode: "injected"` or `mode: "browser-wallet"` found no usable `window.chia`.                                               | `mode` (the caller's raw value), `acceptAnyInjected` |
-| `WC_OPTIONS_REQUIRED`   | WalletConnect was needed (`mode: "walletconnect"`, or the WC leg of `"auto"`) but no `walletConnect` options were supplied. | `mode` (the caller's raw value)                      |
-| `WC_DEPENDENCY_MISSING` | The optional `@walletconnect/sign-client` peer dependency is not installed/usable.                                          | —                                                    |
-| `METHOD_NOT_SUPPORTED`  | The active transport/session does not grant the requested CHIP-0002 method.                                                 | `method`                                             |
-| `WALLET_TIMEOUT`        | A WalletConnect RPC exceeded `requestTimeoutMs` without a response.                                                         | `method`, `timeoutMs`                                |
+| Code                    | Thrown when                                                                                                                                                                         | Context                                                                                      |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `NO_INJECTED_WALLET`    | `mode: "injected"` or `mode: "browser-wallet"` found no usable `window.chia`.                                                                                                       | `mode` (the caller's raw value), `acceptAnyInjected`                                         |
+| `WC_OPTIONS_REQUIRED`   | WalletConnect was needed (`mode: "walletconnect"`, or the WC leg of `"auto"`) but no `walletConnect` options were supplied.                                                         | `mode` (the caller's raw value)                                                              |
+| `WC_DEPENDENCY_MISSING` | The optional `@walletconnect/sign-client` peer dependency is not installed/usable.                                                                                                  | —                                                                                            |
+| `METHOD_NOT_SUPPORTED`  | The active transport/session does not grant the requested CHIP-0002 method.                                                                                                         | `method`                                                                                     |
+| `WALLET_TIMEOUT`        | A WalletConnect RPC exceeded `requestTimeoutMs` without a response.                                                                                                                 | `method`, `timeoutMs`                                                                        |
+| `NEEDS_CONSOLIDATION`   | `Paywall.requestPayment`: the wallet holds enough of the asset, but covering the target needs more than `coinLimit` coins (§8.5). Recoverable — `Paywall.consolidate()` then retry. | `asset`, `availableCoinCount`, `availableTotal`, `required`, `cap` (counts and amounts ONLY) |
+| `INSUFFICIENT_FUNDS`    | `Paywall.requestPayment`: the wallet's total for the asset is below the target — consolidation cannot help (§8.5). Terminal for this wallet state.                                  | `asset`, `availableCoinCount`, `availableTotal`, `required`, `cap` (counts and amounts ONLY) |
 
 `isDigSdkError(e, code?)` is the required narrowing check (brand-based, not `instanceof`) since the
 SDK ships several independently-bundled entry points that each inline their own `DigSdkError`
@@ -188,6 +192,11 @@ class identity.
 - `WALLET_METHODS` / `SIGN_METHODS` (the CHIP-0002 method surface both transports negotiate) are
   defined once in `src/methods.ts` and MUST be identical for both transports — a dapp's method call
   MUST behave the same regardless of which connector is active.
+- The `Paywall`'s coin selection and consolidation (§8) obey the ecosystem coin-management contract
+  (`SYSTEM.md` → chip35_dl_coin → "Coin-management shared contract"): the ordering, the 50-coin
+  cap, the three-way `SelectCoinsResult` and the two consolidation builders are chip35's, consumed
+  verbatim. A change to any of them is a coordinated chip35 + `SYSTEM.md` + consumer change — never
+  an SDK-local one.
 
 ---
 
@@ -596,3 +605,260 @@ it.)
     `@dignetwork/dig-capsule-wasm/web` and instantiates the pinned package artifact, so the trust
     anchor there is the package supply chain — NOT byte-level SRI. An app on an untrusted delivery
     path opts into byte-level SRI with `configureWasm({ wasmUrl })`.
+
+---
+
+## 8. Coin management (Paywall) — the shared #410 contract
+
+This section is the contract for how `Paywall` chooses the buyer's coins, how it reports a wallet
+that cannot fund a payment, and how it merges coins on the integrator's explicit request. It obeys
+the ecosystem coin-management contract (`SYSTEM.md` → chip35_dl_coin → "Coin-management shared
+contract"). **Every clause here is specified ahead of its implementation** (dig-sdk PR #20) unless
+tagged _(shipped: `file:line`)_; a clause tagged _(open — Qn)_ has its VALUE fixed but a named
+decision outstanding, recorded on PR #20, and is not implementable until that decision lands.
+
+### 8.1 The primitives and their owner
+
+- The selection policy, the cap, the three-way result and both consolidation spends are OWNED by
+  `@dignetwork/chip35-dl-coin-wasm`: `selectCoins(coins, target, asset, cap?)`,
+  `buildCoinConsolidation(spenderKey, coins, cap, fee)`, `buildCatConsolidation(spenderKey, cats,
+cap?)` (`chip35_dl_coin_wasm.d.ts` 0.17.1: lines 727, 488, 464). The SDK composes them and MUST
+  NOT reimplement, re-sort, pre-filter by value, or otherwise second-guess any of them — a
+  restatement in JS is a rival implementation that will diverge.
+- The rule, by reference: `selectCoins` orders **high-value-first** (descending `amount`, ties broken
+  by coin id ascending), accumulates until the target is covered, and returns one of three outcomes
+  (chip35 `core/src/select.rs:80-131`): `{ ok:true, coins, total, change, coinCount, asset }` with
+  `coins[0]` the lead coin every builder spends first; `{ ok:false, needsConsolidation:true, … }` —
+  the value exists but covering the target needs more than `cap` coins; `{ ok:false,
+needsConsolidation:false, … }` — the total is genuinely below the target. The SDK trusts this
+  result; a reader MUST NOT conclude the SDK re-checks `total ≥ target` itself.
+- `selectCoins`, `buildCoinConsolidation`, `buildCatConsolidation` and the types `SelectCoinsResult`,
+  `PaymentAsset`, `Coin`, `Cat`, `CatInfo`, `LineageProof`, `CoinSpend` are available VERBATIM to
+  integrators via `@dignetwork/dig-sdk/spend` _(shipped: `src/spend.ts:32` — `export *`; present in
+  the resolved chip35 `^0.16.0` d.ts at lines 727/488/464)_. They are the primitives `Paywall`
+  composes; an integrator building its own spend flow calls them directly with the same contract.
+
+### 8.2 Units (normative — every amount names its unit)
+
+- XCH amounts are **mojos** (`1 XCH = 10^12 mojos`). CAT amounts are the CAT's **base units** — for
+  $DIG, 3 decimals, `1 base unit = 0.001 DIG`. The SDK NEVER converts between XCH and a CAT.
+- Every amount crossing the wasm boundary (`target`, `fee`, `total`, `change`, `availableTotal`,
+  `required`, `Coin.amount`, `LineageProof.parentAmount`) is a `bigint`. `amount` and `fee` accept
+  `number | bigint` at the public API _(shipped: `src/paywall.ts:89-104`)_ and are converted with
+  `BigInt()` before use.
+- `coinLimit`, `sourceLimit`, `cap`, `coinCount`, `availableCoinCount`, `inputCount` are plain JS
+  integer `number`s (counts, never amounts).
+
+### 8.3 Sourcing candidate coins (`sourceLimit`)
+
+- `requestPayment` and `consolidate` source the buyer's candidate coins from the connected wallet
+  through `ChiaProvider.getXchCoins(limit)` / `getCatCoins(assetId, limit)` — one
+  `chip0002_getAssetCoins` call with `includedLocked: false` _(shipped:
+  `src/provider/methods.ts:183-215`)_ — passing **`sourceLimit`** as the wallet `limit`.
+  `sourceLimit` is a new optional argument on both calls, default **500** (exported
+  `DEFAULT_COIN_SOURCE_LIMIT`; the hub sources with the same figure, `lib/consolidation.ts:87`).
+  `coinLimit` MUST NOT be forwarded as the wallet `limit`: the wallet's page order is not value
+  order, and truncating at the cap before selecting would defeat high-value-first.
+- `sourceLimit` MUST be an integer ≥ 1 and ≥ the effective `coinLimit`/`cap`; otherwise
+  `INVALID_ARGUMENT` (`context.value = "sourceLimit"`). A source page smaller than the cap can never
+  produce `needsConsolidation:true` and would report a fundable wallet as `INSUFFICIENT_FUNDS`.
+- The sourced set is handed WHOLE to `selectCoins`. The wallet's own order is never used to choose.
+- A record with `locked === true` is excluded before selection. Because the SDK asks the wallet for
+  unlocked coins only, this clause is VACUOUSLY satisfied for a conforming wallet; it exists so a
+  wallet that ignores `includedLocked` cannot put a locked coin into a spend.
+- **Bound on the counts.** `availableCoinCount` / `availableTotal` in a §8.5 failure describe the
+  SOURCED set. When the wallet returned exactly `sourceLimit` records they are LOWER bounds on what
+  the wallet holds, and an error message SHOULD say "at least". A wallet that silently pages fewer
+  than asked cannot be detected from the count; a reader MUST NOT conclude from these figures that
+  the wallet holds no more.
+
+### 8.4 Coercion: CHIP-0002 `SpendableCoin` → wasm `Coin` / `Cat`
+
+The wallet returns CHIP-0002 `SpendableCoin` records — `{ coin: { parent_coin_info, puzzle_hash,
+amount }, coinName, puzzle, confirmedBlockIndex, locked, lineageProof? }` (CHIP-0002 §"SpendableCoin",
+`chip-0002.md:166-177`), hex strings and JSON numbers. The wasm's `Coin` is camelCase, raw bytes and
+`bigint` (`Coin { parentCoinInfo: Uint8Array; puzzleHash: Uint8Array; amount: bigint }`, d.ts 5-9;
+chip35 `wasm/src/types.rs:68-74`, `#[serde(rename_all = "camelCase")]` + `serde_bytes`) and does
+NOT accept the wire record. Therefore:
+
+- Every sourced record MUST be coerced before it reaches `selectCoins` and before it reaches ANY
+  builder. Raw wallet records MUST NOT be forwarded to `buildPayment` / `buildCatPayment` (this
+  replaces the forwarding at `src/paywall.ts:277-299`).
+- **`Coin` mapping** (the hub's, `lib/consolidation.ts:73-79`, `lib/dig.ts:248-252`):
+  `parentCoinInfo = hexToBytes(coin.parent_coin_info)`, `puzzleHash = hexToBytes(coin.puzzle_hash)`,
+  `amount = BigInt(coin.amount)`. Hex is accepted with or without `0x` _(shipped:
+  `src/hex.ts:30-41`)_. `amount` MUST be accepted as a JSON number OR a decimal string — a wallet
+  emits a string above `2^53 − 1` so precision is never lost (hub `lib/spend-convert.ts:199-205`).
+  The camelCase spellings `parentCoinInfo` / `puzzleHash` MUST be accepted as aliases of the
+  snake_case fields, because wallets vary (hub `lib/types.ts:181-197`).
+- **`Cat` mapping** (CAT paths). `Cat { coin, lineageProof?, info }` (d.ts 247-251), `CatInfo {
+assetId, hiddenPuzzleHash?, p2PuzzleHash }` (d.ts 240-244), `LineageProof { parentParentCoinInfo,
+parentInnerPuzzleHash, parentAmount }` (d.ts 19-23):
+  - `coin` — as above.
+  - `info.assetId = hexToBytes(args.assetId)`; `info.hiddenPuzzleHash` omitted or `null` (a standard
+    CAT).
+  - `lineageProof` — from the RECORD's own `lineageProof`: `parentParentCoinInfo =
+hexToBytes(lineageProof.parentName)`, `parentInnerPuzzleHash =
+hexToBytes(lineageProof.innerPuzzleHash)`, `parentAmount = BigInt(lineageProof.amount)`. This is
+    the identical triple the hub reconstructs from the parent spend via coinset
+    (`lib/consolidation.ts:421-427`, `lib/dig.ts:299-313`); the SDK has no chain client and takes it
+    from the wallet, which is also the source of the coin itself (Sage populates exactly these fields
+    from the CAT's `Proof::Lineage` — `crates/sage/src/endpoints/wallet_connect.rs:160-164`).
+    Failure direction: a wrong proof makes the CAT spend invalid on-chain and no funds move (closed).
+  - A CAT record with no `lineageProof`, or one whose `innerPuzzleHash` is `null` (Sage's eve-proof
+    arm, `wallet_connect.rs:155-159`), CANNOT be coerced. The SDK MUST refuse the whole operation
+    with a coded `DigSdkError` BEFORE selection or any wallet signing prompt. It MUST NOT silently
+    exclude the coin (excluding understates funds and turns a fundable wallet into a false
+    `INSUFFICIENT_FUNDS`), and MUST NOT forward a `Cat` with a null proof (the wasm accepts the shape
+    and would build an eve spend the wallet is then asked to sign). The same refusal applies to any
+    record whose `coin` fields fail to parse. _(open — Q2: the error code; the two codes §4 adds do
+    not cover a wallet record the SDK cannot use.)_
+  - `info.p2PuzzleHash` MUST be the buyer's INNER (standard p2) puzzle hash — the standard puzzle
+    hash of the buyer synthetic key, the value the hub derives with chia-wallet-sdk-wasm's
+    `standardPuzzleHash` (`lib/chia-address.ts`, applied at `lib/consolidation.ts:398,428` and
+    `lib/dig.ts:278,314`). It is NOT present in the CHIP-0002 record. _(open — Q1: its source. chip35
+    0.17.1 exports no key→puzzle-hash helper, and the SDK MUST NOT compute it in JS — that would be a
+    rival of chia-sdk's `StandardArgs::curry_tree_hash`. Until Q1 lands, the CAT arms of §8.5 and
+    §8.6 are specified but not implementable; the XCH arms do not depend on it.)_
+- **Identity mapping.** The `Coin`s a selection returns are mapped back to their source records by
+  the triple `(parentCoinInfo, puzzleHash, amount)` — equal to coin-id equality — consuming each
+  record once so two records with identical triples map to two distinct records (hub
+  `lib/coin-select.ts:99-108,141-155`). A reader MUST NOT conclude the SDK computes coin ids; it does
+  not.
+- **Single-key bound (what a reader may NOT conclude).** The buyer key is `getPublicKeys()[0]`
+  _(shipped: `src/paywall.ts:225-234`)_. The sourced set is every coin the wallet holds for the
+  asset, across ALL of its addresses; the SDK does not filter it to the coins that key controls (it
+  cannot, without Q1's helper). For a multi-address wallet the §8.5 counts can therefore include
+  coins the buyer key cannot sign, and a spend built over such a coin fails at signing or on-chain
+  (closed). This is the pre-existing single-address assumption of `Paywall`; §8 neither widens nor
+  removes it.
+
+### 8.5 `requestPayment` — capped high-value-first selection and the two failure codes
+
+- `RequestPaymentArgs.coinLimit` is KEPT _(shipped: `src/paywall.ts:105-106`)_ and is the selection
+  cap: default **50** (exported `DEFAULT_COIN_CAP`, equal to chip35's `DEFAULT_COIN_CAP`,
+  `core/src/select.rs:28`, and to the cap `SYSTEM.md` states). It MUST be an integer ≥ 1; otherwise
+  `INVALID_ARGUMENT` (`context.value = "coinLimit"`). The effective cap is passed to `selectCoins`
+  EXPLICITLY (never by relying on the wasm's default), so the cap the SDK documents is the cap
+  applied.
+- Before any wallet RPC, the SDK MUST verify every wasm member the call will need (`selectCoins` and
+  the builder for the asset); a missing member is `SPEND_BUILDER_UNAVAILABLE` with `context.builder`
+  naming it _(pattern shipped: `src/paywall.ts:269-275`)_. There is NO JavaScript fallback selector
+  and NO fallback builder. A wallet is never asked for its coins on a path that cannot complete.
+- The target is `amount + fee` for XCH (`buildPayment` reserves the fee from the same coins) and
+  `amount` for a CAT (a CAT ring nets to zero; `buildCatPayment` takes no fee — d.ts 473). The asset
+  is `{ xch: true }` or `{ assetId: hexToBytes(assetId) }`.
+- On `ok: true`, `result.coins` are forwarded VERBATIM, in the wasm's order, as `selected_coins` to
+  `buildPayment`; for a CAT, the `Cat` objects mapped back per §8.4 are forwarded in that same order
+  to `buildCatPayment`. `coins[0]` is the lead.
+- On `ok: false`:
+  - `needsConsolidation: true` → throw `DigSdkError` **`NEEDS_CONSOLIDATION`**;
+  - `needsConsolidation: false` → throw `DigSdkError` **`INSUFFICIENT_FUNDS`**.
+    Both carry `context = { asset, availableCoinCount, availableTotal, required, cap }` copied from the
+    wasm result, with `asset` as `{ xch: true }` or `{ assetId: <lowercase hex, no 0x> }` and the
+    `bigint` amounts kept as `bigint`. **Privacy bind:** the context carries counts and amounts ONLY —
+    never a coin id, `coinName`, parent coin info, puzzle hash, address, public key or the coin list —
+    so an error surfaced to a UI cannot enumerate the wallet.
+- The two codes are DISTINCT states: `NEEDS_CONSOLIDATION` is recoverable by the buyer's own
+  consolidation (§8.6); `INSUFFICIENT_FUNDS` is not, and a UI MUST NOT offer consolidation for it.
+- `requestPayment` MUST NEVER call `consolidate()` on the buyer's behalf (§8.6, consent).
+- The `PaymentResult` shape is unchanged. A caller that passes no `coinLimit` observes exactly two
+  differences from the pre-§8 behaviour: the coins are chosen by value rather than wallet order, and
+  a wallet that cannot fund the payment is reported by one of the two codes above instead of by a
+  builder or on-chain failure.
+- A chip35 builder rejection (its typed `{ code, message }`) propagates unchanged _(shipped: no
+  wrapping at `src/paywall.ts:281,292`)_; the SDK does not translate it.
+
+### 8.6 `Paywall.consolidate(args)` — merge the smallest coins into one
+
+```ts
+consolidate(args?: {
+  assetId?: string;          // CAT tail hex; omit for XCH
+  cap?: number;              // default DEFAULT_COIN_CAP (50); integer ≥ 2
+  fee?: number | bigint;     // mojos, XCH only; default 0
+  sourceLimit?: number;      // default DEFAULT_COIN_SOURCE_LIMIT (500)
+}): Promise<{ coinSpends: unknown; signature: string; inputCount: number; outputAmount: bigint }>
+```
+
+- Validation, before any wallet RPC: `cap` MUST be an integer ≥ 2 (the wasm cannot merge fewer —
+  `core/src/consolidation.rs:31-52`); `fee` MUST be an integer ≥ 0; `fee` given together with
+  `assetId` MUST be rejected — a CAT ring carries no fee (`buildCatConsolidation` has no fee
+  parameter, d.ts 464; an XCH fee for a CAT merge rides on a separate XCH coin built with `addFee`
+  from `/spend`, asserting the lead CAT coin id — the SDK does not build that rider); `sourceLimit`
+  per §8.3. Each violation is `INVALID_ARGUMENT` with `context.value` naming the argument.
+- The required builder (`buildCoinConsolidation` for XCH, `buildCatConsolidation` for a CAT) MUST be
+  present on the wasm before any wallet RPC; otherwise `SPEND_BUILDER_UNAVAILABLE` naming it.
+- Coins are sourced (§8.3) and coerced (§8.4). Fewer than two coercible records →
+  `INVALID_ARGUMENT` with `context = { value: "coins", coinCount }`. Nothing is signed.
+- The WHOLE coerced set is passed to the builder — `buildCoinConsolidation(buyerKey, coins, cap,
+BigInt(fee))` or `buildCatConsolidation(buyerKey, cats, cap)`. The wasm chooses the SMALLEST `cap`
+  coins (ascending amount, ties by coin id — `core/src/consolidation.rs:31-52`) and self-sends ONE
+  output coin to the spender's own puzzle hash (`core/src/consolidation.rs:65-100`). The SDK MUST NOT
+  pre-select. A `fee ≥` merged total is rejected by the wasm ("fee must be less than the consolidated
+  amount", `consolidation.rs:76-79`) and propagates as that chip35 error; the SDK does not pre-check
+  it.
+- The returned spends are signed with `provider.signCoinSpends(coinSpends)` (encoding per §8.8).
+- Result: `coinSpends` (the spends the wallet signed), `signature` (the wallet's aggregated BLS
+  signature, hex), `inputCount = coinSpends.length` (the builders emit exactly one spend per merged
+  input), and `outputAmount` — the amount of the single output coin: the sum of the merged inputs'
+  `coin.amount` minus `fee` for XCH (mojos), or that sum for a CAT (base units) — the figure the
+  builder's own contract fixes (`consolidation.rs:56-64`, `:99`). `outputAmount` is a report, not a
+  computation the spend depends on.
+- The SDK does NOT push: `ChiaProvider` has no broadcast method, and consolidation is a spend of real
+  funds (it pays `fee` mojos and replaces the merged coins with one). The integrator pushes
+  `{ coinSpends, signature }` through its own path and waits for confirmation.
+- **Consent (North Star §6.0).** Consolidation is a spend, so it is explicit and disclosed: it runs
+  ONLY when the integrator calls `consolidate()`, after an explained, dismissible prompt (§8.7).
+  `requestPayment` never triggers it. Nothing in §8 runs on any READ path — selection never gates
+  reading content.
+
+### 8.7 The integrator loop (informative — SHOULD)
+
+The hub's loop (`features/coin-management/consolidate.ts:57-110`) is the reference shape; an
+integrator SHOULD implement it as:
+
+1. call `requestPayment`; on `NEEDS_CONSOLIDATION` continue, on any other error stop;
+2. show an honest, dismissible prompt built from `err.context`: how many coins the wallet holds
+   (`availableCoinCount`, "at least" when it equals `sourceLimit`), that only the largest `cap` can
+   be spent at once, the shortfall against `required`, the cost (`fee` mojos for XCH; a CAT merge is
+   fee-less unless the app adds an XCH rider), and that ONE new coin replaces the merged ones.
+   Declining surfaces the original `NEEDS_CONSOLIDATION` to the caller — never a silent retry, never
+   a pre-ticked or timed prompt;
+3. call `consolidate({ assetId?, fee })`, push `{ coinSpends, signature }` through the app's own
+   path;
+4. wait for on-chain confirmation — e.g. watch any merged input (`coinSpends[i].coin`) become spent;
+5. re-run `requestPayment`; repeat from 1 with a bounded number of rounds (the hub uses 8), stopping
+   on success, on the user cancelling, or on `INSUFFICIENT_FUNDS`.
+
+### 8.8 Encoding at the wallet boundary _(open — Q3)_
+
+- Coin spends cross the wallet boundary (`chip0002_signCoinSpends`) in the CHIP-0002 wire encoding:
+  `{ coin: { parent_coin_info, puzzle_hash, amount }, puzzle_reveal, solution }`, `0x`-prefixed
+  lowercase hex, `amount` a JS number when ≤ `2^53 − 1` and a decimal string above it (hub
+  `lib/spend-convert.ts:195-215`, `coinSpendToWallet`). The wasm's `CoinSpend` (`Uint8Array` fields,
+  `bigint` amount) is NOT JSON-serialisable — `JSON.stringify` throws on a `bigint` — so it cannot
+  cross the WalletConnect relay or an extension message channel unconverted. The SDK currently
+  forwards it raw (`src/provider/methods.ts:102-119`); this clause is not yet implemented.
+- _(open — Q3: where the conversion lives — the `signCoinSpends` boundary, accepting both shapes —
+  and which encoding `PaymentResult.coinSpends` / the `consolidate()` result return. Value fixed by
+  this clause: the wallet MUST receive the wire encoding.)_
+
+### 8.9 `MonetizationSpends` additions and public constants
+
+- `MonetizationSpends` gains OPTIONAL members `selectCoins?`, `buildCoinConsolidation?`,
+  `buildCatConsolidation?` with exactly the d.ts signatures of §8.1. Optional keeps every existing
+  injector type-checking (additive); at runtime a missing member is `SPEND_BUILDER_UNAVAILABLE`
+  (§8.5, §8.6). An injector that omits `selectCoins` can no longer complete `requestPayment` — the
+  production path injects the whole wasm, so this reaches only test spies.
+- The main entry exports `DEFAULT_COIN_CAP = 50` and `DEFAULT_COIN_SOURCE_LIMIT = 500`.
+  `DEFAULT_COIN_CAP` MUST equal the cap the shared contract states; a change to it is a coordinated
+  change (§6), and a test pins the value.
+
+### 8.10 Backward compatibility (this surface)
+
+- `RequestPaymentArgs` gains no required field; `coinLimit` keeps its name and type and now also
+  bounds the selection. `PaymentResult` is unchanged. `MonetizationSpends` gains optional members
+  only. `consolidate()`, the two constants and the two error codes are additive.
+- A caller that never handled `NEEDS_CONSOLIDATION` / `INSUFFICIENT_FUNDS` receives a coded
+  `DigSdkError` where it previously received a chip35 builder failure or an on-chain rejection; the
+  failure direction is unchanged (closed — no spend is built).
