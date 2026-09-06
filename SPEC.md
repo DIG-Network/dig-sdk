@@ -615,16 +615,18 @@ that cannot fund a payment, and how it merges coins on the integrator's explicit
 the ecosystem coin-management contract (`SYSTEM.md` → chip35_dl_coin → "Coin-management shared
 contract"). **Every clause here is specified ahead of its implementation** (dig-sdk PR #20) unless
 tagged _(shipped: `file:line`)_; a clause tagged _(open — Qn)_ has its VALUE fixed but a named
-decision outstanding, recorded on PR #20, and is not implementable until that decision lands.
+decision outstanding — settled by the orchestrator before the step that implements it is
+dispatched — and is not implementable until that decision lands.
 
 ### 8.1 The primitives and their owner
 
 - The selection policy, the cap, the three-way result and both consolidation spends are OWNED by
   `@dignetwork/chip35-dl-coin-wasm`: `selectCoins(coins, target, asset, cap?)`,
-  `buildCoinConsolidation(spenderKey, coins, cap, fee)`, `buildCatConsolidation(spenderKey, cats,
-cap?)` (`chip35_dl_coin_wasm.d.ts` 0.17.1: lines 727, 488, 464). The SDK composes them and MUST
-  NOT reimplement, re-sort, pre-filter by value, or otherwise second-guess any of them — a
-  restatement in JS is a rival implementation that will diverge.
+  `buildCoinConsolidation(spenderKey, coins, cap, fee)` and
+  `buildCatConsolidation(spenderKey, cats, cap?)` (`chip35_dl_coin_wasm.d.ts` 0.17.1: lines 727,
+  488, 464). The SDK composes them and MUST NOT reimplement, re-sort, pre-filter by value, or
+  otherwise second-guess any of them — a restatement in JS is a rival implementation that will
+  diverge.
 - The rule, by reference: `selectCoins` orders **high-value-first** (descending `amount`, ties broken
   by coin id ascending), accumulates until the target is covered, and returns one of three outcomes
   (chip35 `core/src/select.rs:80-131`): `{ ok:true, coins, total, change, coinCount, asset }` with
